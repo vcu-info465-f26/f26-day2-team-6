@@ -17,7 +17,6 @@ def main():
     build_db.save_to_db(forecast)
     chart.make_chart()
 
-
     print("Done. Look in output/ for chart.png and weather.db,")
     print("then run 'git status' and notice that neither one is listed.")
 
