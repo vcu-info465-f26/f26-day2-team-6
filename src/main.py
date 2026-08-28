@@ -3,6 +3,7 @@ from pathlib import Path
 import build_db
 import chart
 import fetch
+import analyze
 
 # YOUR WORK, STEP 1 OF 2
 # Uncomment this once you have created src/analyze.py on your branch:
@@ -16,6 +17,8 @@ def main():
     forecast = fetch.api_call()
     build_db.save_to_db(forecast)
     chart.make_chart()
+    data=analyze.get_max()
+    print(data)
 
 
     print("Done. Look in output/ for chart.png and weather.db,")
