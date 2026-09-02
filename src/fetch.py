@@ -3,6 +3,9 @@
 This file knows about Open-Meteo. Nothing else in the project does, which
 means changing to a different API is a change to this file alone.
 """
+# This file creates charts from the processed data so the results can be visualized clearly.
+# The main function takes the analyzed data and produces the chart used to display the results.
+# It uses [NON-OBVIOUS THING FROM THE CODE] because [WHY THE CODE DOES IT THAT WAY].
 
 import pandas as pd
 import requests
