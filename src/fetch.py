@@ -3,7 +3,7 @@
 This file knows about Open-Meteo. Nothing else in the project does, which
 means changing to a different API is a change to this file alone.
 """
-
+#This code uses the latitude and longitude to provide the weather. 
 import pandas as pd
 import requests
 
