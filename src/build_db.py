@@ -1,3 +1,6 @@
+# This file creates and maintains the SQLite database that stores the weather forecast data produced by the fetch stage.
+# The main function, save_to_db(forecast), accepts a DataFrame of day, high, low, and rain values and writes them into the forecast table, replacing any existing row for the same day instead of adding duplicates.
+# The less obvious part is that it is safe to run repeatedly because it creates the table only if it does not already exist and uses INSERT OR REPLACE to keep the database from growing with repeated runs.
 """Storing the data. One job: put the table somewhere it will stay.
 
 A SQLite database is a single file. There is no server to start, no
