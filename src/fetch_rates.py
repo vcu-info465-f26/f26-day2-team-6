@@ -1,6 +1,6 @@
 import requests
 
-def get_latest_rates(base="USD", quotes="EUR,GBP,JPY"):
+def get_latest_rates(base="USD", quotes=None):
     url = "https://api.frankfurter.dev/v2/rates"
 
     # send the request
