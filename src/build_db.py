@@ -1,7 +1,13 @@
 import sqlite3
+import json
+import pathlib
 from fetch_currency_names import get_currency_names
 from fetch_rates import get_latest_rates
 
+
+DATA_DIR = pathlib.Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+# makes a data folder if it doesn't already exist
 
 conn = sqlite3.connect("project.db")
 # opens (or creates) the database file we'll be storing everything in
@@ -30,6 +36,10 @@ conn.execute("""CREATE TABLE exchange_rates (
 currency_names = get_currency_names()
 # stores the list of currency dictionaries from the API (same messy data as before)
 
+with open(DATA_DIR / "currencies-snapshot.json", "w") as f:
+    json.dump(currency_names, f)
+# saves a raw copy of the api response so we have a snapshot on file
+
 for currency in currency_names:
     conn.execute(
         "INSERT INTO currencies VALUES (?,?,?)",
@@ -40,6 +50,10 @@ for currency in currency_names:
 
 rate_rows = get_latest_rates()
 # stores the list of rate dictionaries from the API
+
+with open(DATA_DIR / "rates-snapshot.json", "w") as f:
+    json.dump(rate_rows, f)
+# saves a raw copy of this response too
 
 for row in rate_rows:
     conn.execute(
