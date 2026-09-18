@@ -1,92 +1,69 @@
-# This file creates and maintains the SQLite database that stores the weather forecast data produced by the fetch stage.
-# The main function, save_to_db(forecast), accepts a DataFrame of day, high, low, and rain values and writes them into the forecast table, replacing any existing row for the same day instead of adding duplicates.
-# The less obvious part is that it is safe to run repeatedly because it creates the table only if it does not already exist and uses INSERT OR REPLACE to keep the database from growing with repeated runs.
-"""Storing the data. One job: put the table somewhere it will stay.
-
-A SQLite database is a single file. There is no server to start, no
-connection string, and no password -- connect() simply creates the file
-if it is not already there.
-
-sqlite3 ships with Python, which is why it is not in requirements.txt.
-"""
-
 import sqlite3
-from pathlib import Path
+import json
+import pathlib
+from fetch_currency_names import get_currency_names
+from fetch_rates import get_latest_rates
 
-# NOTE: this same line appears in chart.py. Two copies of one fact will
-# eventually disagree with each other. We will fix that properly later.
-DB_PATH = Path("output") / "weather.db"
 
+DATA_DIR = pathlib.Path("data")
+DATA_DIR.mkdir(exist_ok=True)
+# makes a data folder if it doesn't already exist
 
-def save_to_db(forecast):
-    """Write the forecast table into the database.
+conn = sqlite3.connect("project.db")
+# opens (or creates) the database file we'll be storing everything in
 
-    Four moves, every time: connect, execute, commit, close.
+conn.execute("DROP TABLE IF EXISTS currencies")
+conn.execute("DROP TABLE IF EXISTS exchange_rates")
+# wipes the tables if they already exist so we don't get duplicate rows on rerun
 
-    Forgetting commit() is the one that hurts, because nothing errors --
-    the program finishes cleanly and the rows are simply not there.
-    """
-    conn = sqlite3.connect(DB_PATH)
+conn.execute("""CREATE TABLE currencies (
+    currency_code TEXT PRIMARY KEY,
+    name TEXT,
+    symbol TEXT
+)""")
+# one row per currency, this barely changes so it gets its own small table
+# EX: USD, United States Dollar, $
 
-    # IF NOT EXISTS is what makes this safe to run twice. Without it, the
-    # second run crashes on a table that already exists.
+conn.execute("""CREATE TABLE exchange_rates (
+    date TEXT,
+    base_code TEXT,
+    quote_code TEXT,
+    rate REAL
+)""")
+# one row per rate on a given date, this grows every time we fetch
+# EX: 2026-09-17, USD, EUR, 0.92
+
+currency_names = get_currency_names()
+# stores the list of currency dictionaries from the API (same messy data as before)
+
+with open(DATA_DIR / "currencies-snapshot.json", "w") as f:
+    json.dump(currency_names, f)
+# saves a raw copy of the api response so we have a snapshot on file
+
+for currency in currency_names:
     conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS forecast (
-            day  TEXT PRIMARY KEY,
-            high REAL,
-            low  REAL,
-            rain REAL
-        )
-        """
+        "INSERT INTO currencies VALUES (?,?,?)",
+        (currency["iso_code"], currency["name"], currency["symbol"]),
     )
+# loops through every currency and inserts it into the currencies table
+# iso_code is what the API calls it, we're just calling it currency_code in our table
 
-    rows = list(forecast.itertuples(index=False, name=None))
+rate_rows = get_latest_rates()
+# stores the list of rate dictionaries from the API
 
-    # The ? placeholders are not a style preference. Building this string
-    # with an f-string breaks on any value containing an apostrophe, and
-    # is the hole SQL injection goes through.
-    #
-    # INSERT OR REPLACE means re-running today overwrites today's row
-    # instead of adding a second copy. Run the program five times and you
-    # still have seven rows.
-    conn.executemany(
-        "INSERT OR REPLACE INTO forecast (day, high, low, rain) VALUES (?, ?, ?, ?)",
-        rows,
+with open(DATA_DIR / "rates-snapshot.json", "w") as f:
+    json.dump(rate_rows, f)
+# saves a raw copy of this response too
+
+for row in rate_rows:
+    conn.execute(
+        "INSERT INTO exchange_rates VALUES (?,?,?,?)",
+        (row["date"], row["base"], row["quote"], row["rate"]),
     )
+# loops through every rate and inserts it into the exchange_rates table
+# base_code and quote_code are what link back to the currency_code in the other table
 
-    conn.commit()
-    conn.close()
-
-if __name__ == "__main__":
-    # Testing this file on its own. From the repo root:
-    #
-    #     python src/build_db.py
-    #
-    # Notice that this never calls the API. Storing data and fetching
-    # data are separate jobs, so they can be tested separately -- and
-    # that is most of the reason they live in separate files. This test
-    # works on a plane with no wifi.
-    import pandas as pd
-
-    Path("output").mkdir(exist_ok=True)
-
-    fake = pd.DataFrame(
-        {
-            "day": ["2026-08-27", "2026-08-28"],
-            "high": [88.1, 91.4],
-            "low": [70.2, 72.8],
-            "rain": [0.0, 0.12],
-        }
-    )
-
-    save_to_db(fake)
-    save_to_db(fake)  # deliberately twice -- should still be 2 rows
-
-    conn = sqlite3.connect(DB_PATH)
-    for row in conn.execute("SELECT * FROM forecast ORDER BY day"):
-        print(row)
-    count = conn.execute("SELECT COUNT(*) FROM forecast").fetchone()[0]
-    conn.close()
-
-    print("row count:", count, "(should be 2, not 4)")
+conn.commit()
+conn.close()
+print("rebuilt currency database")
+# saves everything and closes the connection, this line just confirms it ran
