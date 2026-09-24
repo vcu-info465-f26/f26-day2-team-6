@@ -12,6 +12,9 @@ The second endpoint retrieves information about currencies, including the countr
 
 The data from both endpoints is then brought together in the Build.db database. By combining the exchange rate, date, country, and currency symbol, the database creates a centralized dataset that can be used for comparison, analysis, and review.
 
+Our code runs, it pulls real data from more two Frankfuter API, it writes dated snapshots, it
+loads them into a database, and a SQL query produces the summary. 
+
 Hassan - Project Manager
 Alana - Reviewer
 Shanika - Reviewer 
