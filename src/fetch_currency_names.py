@@ -1,3 +1,5 @@
+import json
+from datetime import date
 import requests
 
 def get_currency_names():
@@ -12,3 +14,8 @@ def get_currency_names():
 if __name__ == "__main__":
     rows = get_currency_names()
     print(rows[0])
+
+    # save a dated snapshot so every run adds a new file instead of overwriting one
+    today = date.today().isoformat()
+    with open(f"src/data/currencies_{today}.json", "w") as f:
+        json.dump(rows, f)
