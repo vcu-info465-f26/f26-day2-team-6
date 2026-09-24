@@ -1,15 +1,13 @@
 import sqlite3
 import json
 import pathlib
-from fetch_currency_names import get_currency_names
-from fetch_rates import get_latest_rates
 
 
-DATA_DIR = pathlib.Path("data")
+DATA_DIR = pathlib.Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 # makes a data folder if it doesn't already exist
 
-conn = sqlite3.connect("project.db")
+conn = sqlite3.connect(pathlib.Path(__file__).resolve().parent / "project.db")
 # opens (or creates) the database file we'll be storing everything in
 
 conn.execute("DROP TABLE IF EXISTS currencies")
@@ -33,35 +31,31 @@ conn.execute("""CREATE TABLE exchange_rates (
 # one row per rate on a given date, this grows every time we fetch
 # EX: 2026-09-17, USD, EUR, 0.92
 
-currency_names = get_currency_names()
-# stores the list of currency dictionaries from the API (same messy data as before)
-
-with open(DATA_DIR / "currencies-snapshot.json", "w") as f:
-    json.dump(currency_names, f)
-# saves a raw copy of the api response so we have a snapshot on file
+# load the most recent dated currencies snapshot from the data folder
+currency_files = sorted(DATA_DIR.glob("currencies_*.json"))
+with open(currency_files[-1]) as f:
+    currency_names = json.load(f)
 
 for currency in currency_names:
     conn.execute(
-        "INSERT INTO currencies VALUES (?,?,?)",
+        "INSERT OR REPLACE INTO currencies VALUES (?,?,?)",
         (currency["iso_code"], currency["name"], currency["symbol"]),
     )
 # loops through every currency and inserts it into the currencies table
-# iso_code is what the API calls it, we're just calling it currency_code in our table
 
-rate_rows = get_latest_rates()
-# stores the list of rate dictionaries from the API
+# load every dated rates snapshot in the data folder
+for path in sorted(DATA_DIR.glob("rates_*.json")):
+    with open(path) as f:
+        rate_rows = json.load(f)
+    for row in rate_rows:
+        conn.execute(
+            "INSERT INTO exchange_rates VALUES (?,?,?,?)",
+            (row["date"], row["base"], row["quote"], row["rate"]),
+        )
+# loops through every rate in every snapshot and inserts it into the exchange_rates table
 
-with open(DATA_DIR / "rates-snapshot.json", "w") as f:
-    json.dump(rate_rows, f)
-# saves a raw copy of this response too
-
-for row in rate_rows:
-    conn.execute(
-        "INSERT INTO exchange_rates VALUES (?,?,?,?)",
-        (row["date"], row["base"], row["quote"], row["rate"]),
-    )
-# loops through every rate and inserts it into the exchange_rates table
-# base_code and quote_code are what link back to the currency_code in the other table
+print("currencies rows:", conn.execute("SELECT COUNT(*) FROM currencies").fetchone()[0])
+print("exchange_rates rows:", conn.execute("SELECT COUNT(*) FROM exchange_rates").fetchone()[0])
 
 conn.commit()
 conn.close()
