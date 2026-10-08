@@ -1,6 +1,8 @@
 #Run the code below in terminal to generate URLs for dashboard and interactive chart. 
 #python -m streamlit run src/app.py
 
+import subprocess
+import sys
 import streamlit as st
 import pandas as pd
 import sqlite3
@@ -10,6 +12,7 @@ from pathlib import Path
 st.set_page_config(page_title="Currency Dashboard", layout="wide")
 
 DB_PATH = Path(__file__).resolve().parent / "project.db"
+ROOT = Path(__file__).resolve().parent.parent
 
 
 @st.cache_data
@@ -28,9 +31,17 @@ st.title("Currency Exchange Rates")
 st.caption("Explore historical rates stored in the local currency database.")
 
 if not DB_PATH.exists():
-    st.error("The currency database has not been built yet.")
-    st.code("python src/build_db.py", language="bash")
-    st.stop()
+    with st.spinner("Building the database from data/ ..."):
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve().parent / "build_db.py")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+    if result.returncode != 0 or not DB_PATH.exists():
+        st.error("Could not build the database.")
+        st.code(result.stderr or result.stdout)
+        st.stop()
 
 rates = load_data()
 if rates.empty:
