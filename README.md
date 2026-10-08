@@ -19,3 +19,15 @@ Hassan - Project Manager
 Alana - Reviewer
 Shanika - Reviewer 
 Amare - Tester
+
+
+## Dashboard (Sprint 2)
+
+Live dashboard: 
+
+Run locally from the repo root:
+
+    pip install -r requirements.txt
+    python -m streamlit run src/app.py
+
+If src/project.db is missing, the app builds it from the files in data/ at startup.
