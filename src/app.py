@@ -19,7 +19,17 @@ ROOT = Path(__file__).resolve().parent.parent
 def load_data():
     with sqlite3.connect(DB_PATH) as conn:
         df_rates = pd.read_sql_query(
-            "SELECT date, base_code, quote_code, rate FROM exchange_rates",
+            """
+            SELECT exchange_rates.date,
+                   exchange_rates.base_code,
+                   exchange_rates.quote_code,
+                   currencies.name,
+                   currencies.symbol,
+                   exchange_rates.rate
+            FROM exchange_rates
+            JOIN currencies
+              ON exchange_rates.quote_code = currencies.currency_code
+            """,
             conn,
         )
 
@@ -52,7 +62,17 @@ base_codes = sorted(rates["base_code"].dropna().unique())
 base_code = st.selectbox("Base currency", base_codes)
 base_rates = rates[rates["base_code"] == base_code]
 quote_codes = sorted(base_rates["quote_code"].dropna().unique())
-quote_code = st.selectbox("Quote currency", quote_codes)
+quote_labels = (
+    base_rates.drop_duplicates("quote_code")
+    .set_index("quote_code")
+    .apply(lambda row: f"{row.name} – {row['name']} ({row['symbol']})", axis=1)
+    .to_dict()
+)
+quote_code = st.selectbox(
+    "Quote currency",
+    quote_codes,
+    format_func=lambda code: quote_labels.get(code, code),
+)
 
 selected_rates = base_rates[base_rates["quote_code"] == quote_code].sort_values("date")
 latest_rate = selected_rates.iloc[-1]
