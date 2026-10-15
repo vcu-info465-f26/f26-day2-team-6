@@ -23,7 +23,7 @@ Amare - Tester
 
 ## Dashboard (Sprint 2)
 
-Live dashboard: 
+Live dashboard: https://team6-currency.streamlit.app/
 
 Run locally from the repo root:
 
