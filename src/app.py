@@ -75,6 +75,27 @@ quote_code = st.selectbox(
 )
 
 selected_rates = base_rates[base_rates["quote_code"] == quote_code].sort_values("date")
+all_dates = base_rates["date"].dt.date
+min_date, max_date = all_dates.min(), all_dates.max()
+if min_date < max_date:
+    start_date, end_date = st.slider(
+        "Date range",
+        min_value=min_date,
+        max_value=max_date,
+        value=(min_date, max_date),
+        format="YYYY-MM-DD",
+    )
+else:
+    start_date, end_date = min_date, max_date
+range_mask = (base_rates["date"].dt.date >= start_date) & (base_rates["date"].dt.date <= end_date)
+range_rates = base_rates[range_mask]
+selected_rates = selected_rates[
+    (selected_rates["date"].dt.date >= start_date) & (selected_rates["date"].dt.date <= end_date)
+]
+if selected_rates.empty:
+    st.warning("No exchange-rate data in the selected date range. Please widen the range.")
+    st.stop()
+
 latest_rate = selected_rates.iloc[-1]
 
 metric_column, date_column = st.columns(2)
@@ -84,6 +105,10 @@ metric_column.metric(
 )
 date_column.metric("Latest observation", latest_rate["date"].strftime("%Y-%m-%d"))
 
+st.subheader(f"{base_code} to {quote_code} exchange rate over time")
+st.caption(
+    f""
+)
 figure = px.line(
     selected_rates,
     x="date",
@@ -93,6 +118,56 @@ figure = px.line(
     labels={"date": "Date", "rate": f"Rate ({quote_code})"},
 )
 st.plotly_chart(figure, use_container_width=True)
+
+st.subheader("Currency % change over the selected dates")
+st.caption(
+    f"Each bar shows how much one currency gained or lost in value against {base_code} between the first and last day "
+    "of the date range above. Green bars gained, red bars lost, sorted from biggest gain to biggest loss. "
+    "Drag the Date range slider to change the window and the bars update; hover a bar for its exact %."
+)
+# Codes in the fetched data that are not a country's money (precious metals, IMF unit, trade-bloc unit)
+NON_COUNTRY_CODES = {"XAU", "XAG", "XPD", "XPT", "XDR", "CMD"}
+changes = []
+for code, grp in range_rates.sort_values("date").groupby("quote_code"):
+    if code in NON_COUNTRY_CODES or code == base_code:
+        continue
+    if len(grp) < 2:
+        continue
+    first_rate, last_rate = grp["rate"].iloc[0], grp["rate"].iloc[-1]
+    if first_rate and last_rate:
+        changes.append({"quote_code": code, "name": str(grp["name"].iloc[0] or code), "pct_change": (first_rate / last_rate - 1) * 100})
+changes_df = pd.DataFrame(changes, columns=["quote_code", "name", "pct_change"])
+if changes_df.empty:
+    st.info("Not enough data in this date range to calculate % changes. Please widen the range.")
+else:
+    changes_df = changes_df.sort_values("pct_change", ascending=False)
+    changes_df["direction"] = changes_df["pct_change"].apply(lambda v: "Gained" if v >= 0 else "Lost")
+    bar_figure = px.bar(
+        changes_df,
+        x="pct_change",
+        y="quote_code",
+        orientation="h",
+        color="direction",
+        custom_data=["name"],
+        color_discrete_map={"Gained": "#2e7d32", "Lost": "#c62828"},
+        labels={"quote_code": "Currency", "pct_change": f"% change vs {base_code}", "direction": ""},
+    )
+    # Horizontal bars so every currency code sits right next to its own bar and stays readable
+    bar_codes = list(changes_df["quote_code"])
+    bar_figure.update_yaxes(
+        categoryorder="array",
+        categoryarray=bar_codes[::-1],
+        tickmode="array",
+        tickvals=bar_codes,
+        ticktext=bar_codes,
+        tickfont={"size": 11},
+    )
+    bar_figure.update_xaxes(side="top")
+    bar_figure.update_layout(height=max(400, 18 * len(bar_codes) + 120), bargap=0.2)
+    bar_figure.update_traces(
+        hovertemplate="<b>%{y}</b>: %{customdata[0]}<br>%{x:+.2f}% vs " + base_code + "<extra></extra>"
+    )
+    st.plotly_chart(bar_figure, use_container_width=True)
 
 st.subheader("Rate history")
 st.dataframe(
