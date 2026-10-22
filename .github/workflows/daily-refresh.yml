@@ -1,0 +1,39 @@
+name: Daily data refresh
+
+on:
+  schedule:
+    - cron: "00 10 * * *"   # 10:17 UTC every day (about 6:00 AM Eastern)
+  workflow_dispatch:         # adds a "Run workflow" button so you can test it now
+
+permissions:
+  contents: write            # lets the workflow commit the new snapshots
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Run from the repo root: the scripts write to src/data/
+      - name: Fetch exchange rates
+        run: python src/fetch_rates.py
+
+      - name: Fetch currency names
+        run: python src/fetch_currency_names.py
+
+
+      - name: Commit new snapshots
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/data data
+          git diff --cached --quiet || git commit -m "Daily data snapshot $(date -u +%F)"
+          git push
