@@ -2,3 +2,7 @@
 output/
 __pycache__/
 *.pyc
+*.tmp
+
+# a second clone of this repo was created inside the workspace by mistake
+f26-day2-team-6/

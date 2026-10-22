@@ -1,0 +1,5 @@
+*Written from exchange-rate data dated September 17th 2026 to October 8th 2026 (generated October 22nd 2026).*
+
+The Paraguayan Guaraní posted the biggest gain against the US dollar, rising +3.13% from 5,927.0000 to 5,747.0000 per 1 USD, while the Iranian Rial suffered the steepest loss, falling ‑20.56% from 1,370,424.0000 to 1,725,139.0000 per 1 USD. For an American traveler, the stronger Guaraní means each dollar buys slightly fewer guaraní, making purchases a bit more expensive in Paraguay, whereas the weaker rial means a dollar stretches much farther in Iran, reducing the cost of goods and services there. Investors holding US dollars would see a modest return if they converted into guaraní and held through the period, but would incur a sizable loss converting back from rials. The opposite effect applies to anyone who had been holding these foreign currencies and needed to convert back to dollars.  
+
+$100 invested in the biggest gainer, Paraguayan Guaraní, on September 17th 2026 would be worth $103.13 on October 8th 2026. $100 invested in the biggest loser, Iranian Rial, on September 17th 2026 would be worth $79.44 on October 8th 2026.
