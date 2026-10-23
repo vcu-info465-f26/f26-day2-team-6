@@ -1,0 +1,45 @@
+name: Daily refresh
+
+on:
+  schedule:
+    - cron: "17 10 * * *"   # every day at 10:17 UTC (6:17 am Eastern)
+  workflow_dispatch:          # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: write             # needed so the job can commit the snapshot
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch today's snapshots
+        run: |
+          python src/fetch_rates.py
+          python src/fetch_currency_names.py
+
+      - name: Write summary
+        continue-on-error: true   # a model failure must never block the snapshot commit
+        env:
+          TEAM_6_API_KEY: ${{ secrets.TEAM_6_API_KEY }}
+        run: python src/summarize.py
+
+      - name: Commit new data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/data data
+          if git diff --cached --quiet; then
+            echo "Nothing new to commit"
+          else
+            git commit -m "Daily snapshot $(date -u +%F)"
+            git push
+          fi
