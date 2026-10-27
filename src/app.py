@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import plotly.express as px
+from chat import show_chat
 from rates_util import (
     NON_COUNTRY_CODES,
     invest_one,
@@ -324,6 +325,8 @@ if changes_df.empty:
     st.info("Not enough data in this date range to calculate % changes. Please widen the range.")
 else:
     changes_df = changes_df.sort_values("pct_change", ascending=False)
+    show_count = st.selectbox("Currencies to display", [5, 10, 20, 50, 100], index=1)
+    changes_df = changes_df.head(show_count)
     changes_df["direction"] = changes_df["pct_change"].apply(lambda v: "Gained" if v >= 0 else "Lost")
     bar_figure = px.bar(
         changes_df,
@@ -346,7 +349,7 @@ else:
         tickfont={"size": 11},
     )
     bar_figure.update_xaxes(side="top")
-    bar_figure.update_layout(height=max(400, 18 * len(bar_codes) + 120), bargap=0.2)
+    bar_figure.update_layout(height=450, bargap=0.3)    
     bar_figure.update_traces(
         hovertemplate="<b>%{y}</b>: %{customdata[0]}<br>%{x:+.2f}% vs " + base_code + "<extra></extra>"
     )
@@ -358,3 +361,11 @@ st.dataframe(
     hide_index=True,
     use_container_width=True,
 )
+
+# Prepare exchange-rate data for the chatbot
+data_context = selected_rates[
+    ["date", "base_code", "quote_code", "rate"]
+].to_string(index=False)
+
+# Display the chatbot
+show_chat(data_context)
