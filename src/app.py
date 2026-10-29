@@ -7,7 +7,7 @@ import streamlit as st
 import pandas as pd
 import sqlite3
 import plotly.express as px
-from chat import show_chat
+from chat import build_chat_context, show_chat
 from rates_util import (
     NON_COUNTRY_CODES,
     invest_one,
@@ -363,9 +363,7 @@ st.dataframe(
 )
 
 # Prepare exchange-rate data for the chatbot
-data_context = selected_rates[
-    ["date", "base_code", "quote_code", "rate"]
-].to_string(index=False)
+data_context = build_chat_context(range_rates, base_code)
 
 # Display the chatbot
 show_chat(data_context)
