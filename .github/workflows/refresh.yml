@@ -30,7 +30,7 @@ jobs:
       - name: Write summary
         continue-on-error: true   # a model failure must never block the snapshot commit
         env:
-          TEAM_6_API_KEY: ${{ secrets.TEAM_6_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY_KEY }}
         run: python src/summary.py
 
       - name: Open snapshot pull request

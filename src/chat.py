@@ -1,9 +1,28 @@
+import os
+
 import streamlit as st
 from openai import OpenAI
 
 from rates_util import invest_one, long_date, pct_changes
 
 MODEL = "openai/gpt-oss-120b"
+
+
+def groq_key():
+    """GROQ_API_KEY from wherever this is running.
+
+    st.secrets covers Streamlit Cloud and a local .streamlit/secrets.toml, but it
+    does NOT fall back to environment variables - and reading it at all raises
+    when no secrets file exists. The environment is where a Codespaces secret
+    lands, which is also where summary.py looks for the same key.
+    """
+    try:
+        key = st.secrets.get("GROQ_API_KEY")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.environ.get("GROQ_API_KEY")
 
 
 def build_chat_context(range_rates, base_code, amount=100):
@@ -49,9 +68,20 @@ def show_chat(data_context):
     with st.chat_message("user"):
         st.write(question)
 
-    try:
-        api_key = st.secrets["GROQ_API_KEY"]
+    api_key = groq_key()
+    if not api_key:
+        # name the actual problem instead of blaming the service: a missing key
+        # used to fall into the same branch as a network failure
+        answer = (
+            "The chat needs a Groq API key. Set GROQ_API_KEY as an environment "
+            "variable, or add it to .streamlit/secrets.toml."
+        )
+        st.session_state.chat_messages.append({"role": "assistant", "content": answer})
+        with st.chat_message("assistant"):
+            st.warning(answer)
+        return
 
+    try:
         client = OpenAI(
             base_url="https://api.groq.com/openai/v1",
             api_key=api_key,
@@ -91,7 +121,7 @@ def show_chat(data_context):
 
         if not answer:
             raise ValueError("Empty response")
-        
+
     except Exception as e:
         print("GROQ ERROR:", type(e).__name__, str(e))
 
@@ -99,7 +129,6 @@ def show_chat(data_context):
             "Sorry, the chat is temporarily unavailable. "
             "Please try again later."
         )
-    
 
     st.session_state.chat_messages.append({
         "role": "assistant",
