@@ -56,3 +56,7 @@ jobs:
           else
             echo "PR already open for $BRANCH"
           fi
+
+          # Queue the PR so it merges itself once any required checks pass.
+          # Needs "Allow auto-merge" turned on in the repo settings.
+          gh pr merge --auto --squash "$BRANCH"

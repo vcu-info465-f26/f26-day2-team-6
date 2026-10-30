@@ -71,8 +71,28 @@ COLORS = palette()
 
 
 # --- data ---------------------------------------------------------------------
+SRC_DATA_DIR = Path(__file__).resolve().parent / "data"
+
+
+def data_token():
+    """Changes whenever the db or any source json file changes, so the
+    cached frame is rebuilt instead of serving a stale snapshot."""
+    stamps = [p.stat().st_mtime for p in SRC_DATA_DIR.glob("*.json")]
+    if DB_PATH.exists():
+        stamps.append(DB_PATH.stat().st_mtime)
+    return max(stamps, default=0.0)
+
+
+def db_is_stale():
+    """True if the db is missing or older than the json files it was built from."""
+    if not DB_PATH.exists():
+        return True
+    built = DB_PATH.stat().st_mtime
+    return any(p.stat().st_mtime > built for p in SRC_DATA_DIR.glob("*.json"))
+
+
 @st.cache_data
-def load_data():
+def load_data(token):
     with sqlite3.connect(DB_PATH) as conn:
         df_rates = pd.read_sql_query(
             """
@@ -93,7 +113,7 @@ def load_data():
     return df_rates
 
 
-if not DB_PATH.exists():
+if db_is_stale():
     with st.spinner("Building the database from data/ ..."):
         result = subprocess.run(
             [sys.executable, str(Path(__file__).resolve().parent / "build_db.py")],
@@ -106,7 +126,7 @@ if not DB_PATH.exists():
         st.code(result.stderr or result.stdout)
         st.stop()
 
-rates = load_data()
+rates = load_data(data_token())
 if rates.empty:
     st.info("The database does not contain any exchange-rate records yet.")
     st.stop()
