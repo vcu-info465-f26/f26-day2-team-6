@@ -1,13 +1,18 @@
-#Run the code below in terminal to generate URLs for dashboard and interactive chart. 
-#python -m streamlit run src/app.py
+# Run the code below in terminal to generate URLs for dashboard and interactive chart.
+# python -m streamlit run src/app.py
 
+import json
 import subprocess
 import sys
-import streamlit as st
+from datetime import date, timedelta
+from pathlib import Path
+
 import pandas as pd
-import sqlite3
 import plotly.express as px
-from chat import show_chat
+import sqlite3
+import streamlit as st
+
+from chat import build_chat_context, show_chat
 from rates_util import (
     NON_COUNTRY_CODES,
     invest_one,
@@ -17,14 +22,55 @@ from rates_util import (
     plural,
     rebase,
 )
-from pathlib import Path
 
 st.set_page_config(page_title="Currency Dashboard", layout="wide")
 
 DB_PATH = Path(__file__).resolve().parent / "project.db"
 ROOT = Path(__file__).resolve().parent.parent
+SUMMARY_FILE = ROOT / "data" / "summary.md"
+SUMMARY_META = ROOT / "data" / "summary.json"
 
 
+# --- colour roles -------------------------------------------------------------
+# Diverging pair for "gained vs lost": blue <-> red. Validated for colour-vision
+# deficiency in both themes. The old green/red pair is the one combination that
+# red-green colourblind readers cannot separate, so the sign is also carried by
+# the legend, the bar direction and the % label - never by colour alone.
+# "up"/"down" encode gained/lost on the ranking bars and the single-series
+# sparklines. "series_1"/"series_2" identify the two lines on the comparison
+# chart: there, colour carries WHICH currency, not which way it moved - two
+# currencies that both fell would otherwise draw two identical red lines.
+LIGHT = {
+    "up": "#2a78d6", "down": "#e34948", "line": "#2a78d6",
+    "series_1": "#2a78d6", "series_2": "#eb6834",
+    "grid": "#e1e0d9", "axis": "#898781",
+}
+DARK = {
+    "up": "#3987e5", "down": "#e66767", "line": "#3987e5",
+    "series_1": "#3987e5", "series_2": "#d95926",
+    "grid": "#2c2c2a", "axis": "#898781",
+}
+
+
+def palette():
+    """Pick the theme-appropriate steps. Falls back to light if Streamlit's
+    version does not expose the active theme."""
+    try:
+        if st.context.theme.type == "dark":
+            return DARK
+    except Exception:
+        try:
+            if st.get_option("theme.base") == "dark":
+                return DARK
+        except Exception:
+            pass
+    return LIGHT
+
+
+COLORS = palette()
+
+
+# --- data ---------------------------------------------------------------------
 @st.cache_data
 def load_data():
     with sqlite3.connect(DB_PATH) as conn:
@@ -47,9 +93,6 @@ def load_data():
     return df_rates
 
 
-st.title("Currency Exchange Rates")
-st.caption("Explore historical rates stored in the local currency database.")
-
 if not DB_PATH.exists():
     with st.spinner("Building the database from data/ ..."):
         result = subprocess.run(
@@ -68,12 +111,58 @@ if rates.empty:
     st.info("The database does not contain any exchange-rate records yet.")
     st.stop()
 
-# any currency can be the base: the data is USD-based, so other bases are cross rates
-# --- AI summary, with selectors that recalculate it -----------------------
-# Every number here is worked out in Python from the database. The model is
-# never asked to do arithmetic, so these figures cannot be invented.
-summary_file = ROOT / "data" / "summary.md"
+ALL_DAYS = rates["date"].dt.date
+FULL_START, FULL_END = ALL_DAYS.min(), ALL_DAYS.max()
 currency_info = load_currency_info(DB_PATH)
+
+
+# These close over `rates`, which is itself cached and does not change during a
+# session. max_entries keeps a long history from pinning one frame per base
+# currency in memory on a small host.
+@st.cache_data(max_entries=4)
+def redenominated(rates, threshold=10):
+    """Currencies whose series contains a single-step jump of `threshold`x or more.
+
+    A real exchange rate does not move tenfold between two consecutive
+    observations. A redenomination does: Venezuela removed six zeros from the
+    bolivar in 2021, so a 2020-to-2026 comparison reads as a +5,000% "gain" when
+    the currency actually collapsed. The two endpoints are in different units, so
+    any percent change across the break is meaningless and must not be ranked,
+    summarised or described as an investment return.
+
+    Returns {code: date of the break}.
+    """
+    broken = {}
+    for code, group in rates.sort_values("date").groupby("quote_code"):
+        series = group["rate"]
+        series = series[series > 0]
+        if len(series) < 2:
+            continue
+        ratio = (series / series.shift()).dropna()
+        if ratio.empty:
+            continue
+        # symmetric, so a 1000x drop counts the same as a 1000x rise
+        ratio = ratio.where(ratio >= 1, 1 / ratio)
+        if (ratio >= threshold).any():
+            broken[code] = group.loc[ratio.idxmax(), "date"].date()
+    return broken
+
+
+@st.cache_data(max_entries=4)
+def rebased(base):
+    return rebase(rates, base)
+
+
+@st.cache_data(max_entries=16)
+def changes_for(base, start, end):
+    frame = rebased(base)
+    days = frame["date"].dt.date
+    window = frame[(days >= start) & (days <= end)]
+    # a currency that was redenominated inside this window has endpoints in
+    # different units, so its percent change is not a real move
+    broken = redenominated(window)
+    comparable = window[~window["quote_code"].isin(broken)]
+    return pct_changes(comparable, base), window, broken
 
 
 def selector_label(code):
@@ -87,285 +176,662 @@ def chart_label(code):
     symbol = currency_info.get(code, (code, ""))[1]
     return f"({code}{symbol})"
 
-with st.container(border=True):
-    st.subheader("AI summary")
-    compare_base_codes = sorted((set(rates["quote_code"]) | {"USD"}) - NON_COUNTRY_CODES)
-    compare_base = st.selectbox(
-        "Base currency for this comparison",
-        compare_base_codes,
-        index=compare_base_codes.index("USD"),
-        format_func=selector_label,
+
+def load_summary():
+    """The daily written summary plus the metadata saying what it covers.
+
+    Deliberately not cached: re-running summary.py should show up on the next
+    rerun without restarting the app.
+    """
+    text = SUMMARY_FILE.read_text() if SUMMARY_FILE.exists() else ""
+    meta = {}
+    if SUMMARY_META.exists():
+        try:
+            meta = json.loads(SUMMARY_META.read_text())
+        except (ValueError, OSError):
+            meta = {}
+    return text, meta
+
+
+def indexed(track):
+    """Value of the currency against the base, rebased to 100 on the first day.
+
+    Stored rates are units of currency per 1 base, so the raw series FALLS when a
+    currency gains - the opposite of what a reader expects from "biggest gainer".
+    Inverting and indexing fixes that and makes two currencies of wildly different
+    scale (1,725,139 IRR vs 5,747 PYG) share one axis honestly, which a second
+    y-axis would not. The last point lands on 100 + pct_change by construction, so
+    the chart and the percentages always agree.
+    """
+    out = track.sort_values("date").copy()
+    first = out["rate"].iloc[0]
+    out["value"] = first / out["rate"] * 100
+    return out
+
+
+def comparison_chart(frames, labels, colors, dashes):
+    """Two indexed series on one axis.
+
+    Colour says which way the currency moved (blue gained, red lost). That alone
+    cannot separate two currencies that both fell, so the dash pattern carries
+    identity: first series solid, second dashed. Both channels are in the legend.
+    """
+    data = pd.concat(
+        [f.assign(series=label) for f, label in zip(frames, labels)], ignore_index=True
     )
-    # The summary follows this date range, so changing it changes every figure below.
-    all_days = rates["date"].dt.date
-    full_start, full_end = all_days.min(), all_days.max()
-    if full_start < full_end:
-        summary_start, summary_end = st.slider(
-            "Date range for this summary",
-            min_value=full_start,
-            max_value=full_end,
-            value=(full_start, full_end),
+    figure = px.line(
+        data,
+        x="date",
+        y="value",
+        color="series",
+        line_dash="series",
+        color_discrete_map=dict(zip(labels, colors)),
+        line_dash_map=dict(zip(labels, dashes)),
+        labels={"date": "Date", "value": "Indexed to 100", "series": ""},
+    )
+    figure.update_traces(line={"width": 2}, hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}<extra></extra>")
+    figure.update_xaxes(gridcolor=COLORS["grid"], title=None)
+    figure.update_yaxes(gridcolor=COLORS["grid"])
+    figure.update_layout(
+        height=300,
+        margin={"l": 0, "r": 0, "t": 10, "b": 0},
+        hovermode="x unified",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0},
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    return figure
+
+
+def sparkline(series, rising):
+    """A small, axis-free line of one currency across the selected window.
+
+    Rates are units of the currency per 1 base, so a currency that GAINED value
+    shows a falling line. The colour carries gained/lost; the caption says which
+    way to read the line.
+    """
+    figure = px.line(series, x="date", y="value")
+    figure.update_traces(
+        line={"color": COLORS["up"] if rising else COLORS["down"], "width": 2},
+        hovertemplate="%{x|%Y-%m-%d}<br>%{y:.1f} vs 100<extra></extra>",
+    )
+    figure.update_xaxes(visible=False)
+    figure.update_yaxes(visible=False)
+    figure.update_layout(
+        height=90,
+        margin={"l": 0, "r": 0, "t": 8, "b": 0},
+        showlegend=False,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    return figure
+
+
+# --- period presets -----------------------------------------------------------
+PRESET_DAYS = {"1M": 30, "6M": 182, "1Y": 365, "5Y": 1826}
+PERIODS = ["1M", "6M", "YTD", "1Y", "5Y", "All", "Custom"]
+
+
+def preset_range(label, min_date, max_date):
+    if label == "All":
+        return min_date, max_date
+    if label == "YTD":
+        start = date(max_date.year, 1, 1)
+    else:
+        start = max_date - timedelta(days=PRESET_DAYS[label])
+    return max(start, min_date), max_date
+
+
+def period_picker():
+    """Segmented buttons where available, radio otherwise."""
+    default = PERIODS.index("All")
+    if hasattr(st, "segmented_control"):
+        picked = st.segmented_control("Period", PERIODS, default=PERIODS[default])
+        return picked or PERIODS[default]
+    return st.radio("Period", PERIODS, index=default, horizontal=True)
+
+
+# --- sidebar: the only place controls live ------------------------------------
+with st.sidebar:
+    st.header("Controls")
+    st.caption("These settings drive every tab.")
+
+    base_codes = sorted((set(rates["quote_code"]) | {"USD"}) - NON_COUNTRY_CODES)
+    base_code = st.selectbox(
+        "Base currency",
+        base_codes,
+        index=base_codes.index("USD") if "USD" in base_codes else 0,
+        format_func=selector_label,
+        help="Rates are stored against the USD, so any other base is a cross rate.",
+    )
+
+    st.divider()
+    period = period_picker()
+    if period == "Custom":
+        picked = st.date_input(
+            "Custom range",
+            value=(FULL_START, FULL_END),
+            min_value=FULL_START,
+            max_value=FULL_END,
             format="YYYY-MM-DD",
         )
-    else:
-        summary_start, summary_end = full_start, full_end
-    window = rates[(all_days >= summary_start) & (all_days <= summary_end)]
-    compare_changes = pct_changes(rebase(window, compare_base), compare_base)
-    if compare_changes.empty:
-        st.info("Not enough data in this date range to compare currencies.")
-    else:
-        compare_codes = sorted(compare_changes["quote_code"])
-        compare_names = dict(zip(compare_changes["quote_code"], compare_changes["name"]))
-        top_code = compare_changes.iloc[0]["quote_code"]
-        bottom_code = compare_changes.iloc[-1]["quote_code"]
-        first_date = window["date"].min().date()
-        last_date = window["date"].max().date()
-        first_day = long_date(first_date)
-        last_day = long_date(last_date)
-        col_a, col_b, col_amount = st.columns(3)
-        with col_a:
-            code_a = st.selectbox(
-                "First currency",
-                compare_codes,
-                index=compare_codes.index(top_code),
-                format_func=selector_label,
-            )
-        with col_b:
-            code_b = st.selectbox(
-                "Second currency",
-                compare_codes,
-                index=compare_codes.index(bottom_code),
-                format_func=selector_label,
-            )
-        with col_amount:
-            amount = st.number_input(
-                f"Amount in {compare_base}",
-                min_value=1.0,
-                value=100.0,
-                step=10.0,
-                format="%.2f",
-            )
-        base_name, base_symbol = currency_info.get(compare_base, (compare_base, ""))
-
-        def money(value):
-            """100.0 -> '$100', 103.13 -> '$103.13', falling back to the code."""
-            text = f"{value:,.2f}"
-            if text.endswith(".00"):
-                text = text[:-3]
-            return f"{base_symbol}{text}" if base_symbol else f"{text} {compare_base}"
-
-        # The bordered boxes come first, grouped by currency: the investment, then the trip.
-        # Each currency is judged on its own figure, so both can be green or both red.
-        for code in (code_a, code_b):
-            row = compare_changes[compare_changes["quote_code"] == code].iloc[0]
-            ending = invest_one(row, amount)
-            grew = ending >= amount
-            invested = (
-                f"**{money(amount)} Investment {'Gained' if grew else 'Lost'}:** "
-                f"A {money(amount)} investment in the {row['name']} on {first_day} "
-                f"would be worth {money(ending)} on {last_day}."
-            ).replace("$", "\\$")
-            if grew:
-                st.success(invested)
-            else:
-                st.error(invested)
-            # A currency that gained costs your base currency more, so the trip is dearer.
-            change = row["pct_change"]
-            if change > 0:
-                trip = (
-                    f"\U0001F30D Your {base_name} buys fewer {plural(row['name'])} "
-                    f"than it did on {first_day}, so expect things to feel slightly "
-                    f"more expensive there as a traveller."
-                )
-            elif change < 0:
-                trip = (
-                    f"\U0001F30D Your {base_name} buys more {plural(row['name'])} "
-                    f"than it did on {first_day}, so expect things to feel slightly "
-                    f"cheaper there as a traveller."
-                )
-            else:
-                trip = (
-                    f"\U0001F30D Purchases as a traveller using the {base_name} "
-                    f"should cost about the same where the {row['name']} is used."
-                )
-            trip = trip.replace("$", "\\$")
-            if change > 0:
-                st.error(trip)
-            elif change < 0:
-                st.success(trip)
-            else:
-                st.info(trip)
-        if code_a == code_b:
-            st.info("Pick two different currencies to compare them.")
-        # The workflow writes one summary a day: USD, the top and bottom currency,
-        # 100 units, the whole period. Any other selection has to be rebuilt here.
-        showing_daily = (
-            compare_base == "USD"
-            and code_a == top_code
-            and code_b == bottom_code
-            and abs(amount - 100.0) < 0.005
-            and first_date == full_start
-            and last_date == full_end
-        )
-        if showing_daily and summary_file.exists():
-            st.markdown(summary_file.read_text().replace("$", "\\$"))
+        if isinstance(picked, tuple) and len(picked) == 2:
+            start_date, end_date = picked
         else:
-            st.markdown(
-                f"*Rebuilt for the currencies and dates you picked, so this is not today's "
-                f"written summary. Worked out from the stored rates between {first_day} "
-                f"and {last_day}.*"
-            )
-        for code in (code_a, code_b):
-            row = compare_changes[compare_changes["quote_code"] == code].iloc[0]
-            gained = row["pct_change"] >= 0
-            spending = (
-                f"so your {compare_base} buys less there than it used to"
-                if gained
-                else f"so your {compare_base} stretches further there than it used to"
-            )
-            st.markdown(
-                (
-                    f"**{row['name']} ({code})** {'gained' if gained else 'lost'} "
-                    f"{abs(row['pct_change']):.2f}% in value against the {compare_base} "
-                    f"between {first_day} and {last_day}. "
-                    f"1 {compare_base} bought {row['first_rate']:,.4f} {code} on {first_day} "
-                    f"and {row['last_rate']:,.4f} {code} on {last_day}, **{spending}.**"
-                ).replace("$", "\\$")
-            )
+            start_date, end_date = FULL_START, FULL_END
+    else:
+        start_date, end_date = preset_range(period, FULL_START, FULL_END)
+    st.caption(f"{long_date(start_date)} to {long_date(end_date)}")
 
-base_codes = sorted((set(rates["quote_code"]) | {"USD"}) - NON_COUNTRY_CODES)
-base_code = st.selectbox(
-    "Base currency",
-    base_codes,
-    index=base_codes.index("USD"),
-    format_func=selector_label,
-)
-rates = rebase(rates, base_code)
-base_rates = rates[rates["base_code"] == base_code]
-quote_codes = sorted(base_rates["quote_code"].dropna().unique())
-quote_labels = (
-    base_rates.drop_duplicates("quote_code")
-    .set_index("quote_code")
-    .apply(lambda row: f"{row.name} – {row['name']} ({row['symbol']})", axis=1)
-    .to_dict()
-)
-quote_code = st.selectbox(
-    "Quote currency",
-    quote_codes,
-    format_func=lambda code: quote_labels.get(code, code),
-)
-
-selected_rates = base_rates[base_rates["quote_code"] == quote_code].sort_values("date")
-all_dates = base_rates["date"].dt.date
-min_date, max_date = all_dates.min(), all_dates.max()
-if min_date < max_date:
-    start_date, end_date = st.slider(
-        "Date range",
-        min_value=min_date,
-        max_value=max_date,
-        value=(min_date, max_date),
-        format="YYYY-MM-DD",
+    st.divider()
+    amount = st.number_input(
+        f"Amount in {base_code}",
+        min_value=1.0,
+        value=100.0,
+        step=10.0,
+        format="%.2f",
+        help="Used for the 'what would this have been worth' figures.",
     )
-else:
-    start_date, end_date = min_date, max_date
-range_mask = (base_rates["date"].dt.date >= start_date) & (base_rates["date"].dt.date <= end_date)
-range_rates = base_rates[range_mask]
-selected_rates = selected_rates[
-    (selected_rates["date"].dt.date >= start_date) & (selected_rates["date"].dt.date <= end_date)
-]
-if selected_rates.empty:
-    st.warning("No exchange-rate data in the selected date range. Please widen the range.")
+
+base_name, base_symbol = currency_info.get(base_code, (base_code, ""))
+
+
+def money(value):
+    """100.0 -> '$100', 103.13 -> '$103.13', falling back to the code."""
+    text = f"{value:,.2f}"
+    if text.endswith(".00"):
+        text = text[:-3]
+    return f"{base_symbol}{text}" if base_symbol else f"{text} {base_code}"
+
+
+def fmt_rate(value):
+    """Rates span 1,725,139 (IRR) to 0.00024 (gold). Fixed decimal places make one
+    of those unreadable, so scale the precision to the magnitude."""
+    if value is None or value != value:  # NaN
+        return "n/a"
+    size = abs(value)
+    if size >= 10000:
+        return f"{value:,.0f}"
+    if size >= 100:
+        return f"{value:,.2f}"
+    if size >= 1:
+        return f"{value:,.4f}"
+    if size >= 0.01:
+        return f"{value:.4f}"
+    return f"{value:.6f}".rstrip("0").rstrip(".") or "0"
+
+
+def esc(text):
+    """Streamlit markdown reads a bare $ as the start of LaTeX."""
+    return text.replace("$", "\\$")
+
+
+changes, window, broken = changes_for(base_code, start_date, end_date)
+base_rates = rebased(base_code)
+
+st.title("Currency Exchange Rates")
+st.caption(f"{long_date(start_date)} to {long_date(end_date)}, measured against the {base_name}.")
+
+if changes.empty:
+    st.warning(
+        "Not enough data in this date range to compare currencies. "
+        "Widen the period in the sidebar."
+    )
     st.stop()
 
-latest_rate = selected_rates.iloc[-1]
+first_date = window["date"].min().date()
+last_date = window["date"].max().date()
+first_day = long_date(first_date)
+last_day = long_date(last_date)
+top_code = changes.iloc[0]["quote_code"]
+bottom_code = changes.iloc[-1]["quote_code"]
+compare_codes = sorted(changes["quote_code"])
 
-metric_column, date_column = st.columns(2)
-metric_column.metric(
-    f"1 {base_code} in {quote_code}",
-    f"{latest_rate['rate']:.6g}",
+# The headline answer, before any tab has to be clicked.
+top_row = changes.iloc[0]
+bottom_row = changes.iloc[-1]
+hero_1, hero_2, hero_3 = st.columns(3)
+hero_1.metric(
+    f"Gained most vs {base_code}",
+    f"{top_row['quote_code']}  {top_row['pct_change']:+.2f}%",
+    help=str(top_row["name"]),
 )
-date_column.metric("Latest observation", latest_rate["date"].strftime("%Y-%m-%d"))
+hero_2.metric(
+    f"Lost most vs {base_code}",
+    f"{bottom_row['quote_code']}  {bottom_row['pct_change']:+.2f}%",
+    help=str(bottom_row["name"]),
+)
+hero_3.metric("Data through", str(FULL_END), help=f"{len(rates):,} stored observations")
 
-st.subheader(
-    (f"{chart_label(base_code)} to {chart_label(quote_code)} "
-     "exchange rate over time").replace("$", "\\$")
-)
-st.caption(
-    f""
-)
-figure = px.line(
-    selected_rates,
-    x="date",
-    y="rate",
-    markers=True,
-    title=f"{chart_label(base_code)} to {chart_label(quote_code)}",
-    labels={"date": "Date", "rate": f"Rate ({quote_code})"},
-)
-st.plotly_chart(figure, use_container_width=True)
+st.divider()
 
-st.subheader("Currency % change over the selected dates")
-st.caption(
-    f"Each bar shows how much one currency gained or lost in value against {base_code} between the first and last day "
-    "of the date range above. Green bars gained, red bars lost, sorted from biggest gain to biggest loss. "
-    "Drag the Date range slider to change the window and the bars update; hover a bar for its exact %."
+tab_summary, tab_rankings, tab_trend, tab_ask = st.tabs(
+    ["Summary", "Rankings", "Trend", "Ask"]
 )
-# Codes in the fetched data that are not a country's money (precious metals, IMF unit, trade-bloc unit)
-NON_COUNTRY_CODES = {"XAU", "XAG", "XPD", "XPT", "XDR", "CMD"}
-changes = []
-for code, grp in range_rates.sort_values("date").groupby("quote_code"):
-    if code in NON_COUNTRY_CODES or code == base_code:
-        continue
-    if len(grp) < 2:
-        continue
-    first_rate, last_rate = grp["rate"].iloc[0], grp["rate"].iloc[-1]
-    if first_rate and last_rate:
-        changes.append({"quote_code": code, "name": str(grp["name"].iloc[0] or code), "pct_change": (first_rate / last_rate - 1) * 100})
-changes_df = pd.DataFrame(changes, columns=["quote_code", "name", "pct_change"])
-if changes_df.empty:
-    st.info("Not enough data in this date range to calculate % changes. Please widen the range.")
-else:
-    changes_df = changes_df.sort_values("pct_change", ascending=False)
-    show_count = st.selectbox("Currencies to display", [5, 10, 20, 50, 100], index=1)
-    changes_df = changes_df.head(show_count)
-    changes_df["direction"] = changes_df["pct_change"].apply(lambda v: "Gained" if v >= 0 else "Lost")
+
+
+# --- Summary ------------------------------------------------------------------
+with tab_summary:
+    summary_text, summary_meta = load_summary()
+
+    meta_start = meta_end = None
+    try:
+        if summary_meta.get("start") and summary_meta.get("end"):
+            meta_start = date.fromisoformat(summary_meta["start"])
+            meta_end = date.fromisoformat(summary_meta["end"])
+    except (ValueError, TypeError):
+        meta_start = meta_end = None
+
+    st.subheader("What moved, and what it means")
+    st.caption(
+        f"Every figure here is calculated in Python from the stored rates between "
+        f"{first_day} and {last_day} in {base_code}. The model is never asked to do "
+        f"arithmetic. Change the base currency or period in the sidebar and all of "
+        f"this recalculates."
+    )
+
+    # Opening selection: the biggest gainer and biggest loser against the base
+    # over the selected period, which on first load is the whole stored history.
+    col_a, col_b = st.columns(2)
+    with col_a:
+        code_a = st.selectbox(
+            "First currency",
+            compare_codes,
+            index=compare_codes.index(top_code),
+            format_func=selector_label,
+        )
+    with col_b:
+        code_b = st.selectbox(
+            "Second currency",
+            compare_codes,
+            index=compare_codes.index(bottom_code),
+            format_func=selector_label,
+        )
+
+    if code_a == code_b:
+        st.info("Pick two different currencies to compare them.")
+
+    picked = list(dict.fromkeys([code_a, code_b]))
+
+    for code in picked:
+        row = changes[changes["quote_code"] == code].iloc[0]
+        ending = invest_one(row, amount)
+        change = row["pct_change"]
+        gained = change > 0
+
+        with st.container(border=True):
+            st.markdown(esc(f"#### {row['name']} ({code})"))
+
+            facts_col, spark_col = st.columns([3, 2])
+
+            with facts_col:
+                f1, f2 = st.columns(2)
+                f1.metric(
+                    f"Change vs {base_code}",
+                    f"{change:+.2f}%",
+                    help="Positive means the currency gained value against your base.",
+                )
+                f2.metric(
+                    esc(f"{money(amount)} would now be"),
+                    esc(money(ending)),
+                    delta=f"{(ending / amount - 1) * 100:+.2f}%",
+                    # Streamlit's delta arrows are red/green, which would undo the
+                    # colourblind-safe palette used everywhere else. The sign carries it.
+                    delta_color="off",
+                )
+                st.caption(
+                    esc(
+                        f"1 {base_code} bought {fmt_rate(row['first_rate'])} {code} on "
+                        f"{first_day}, and {fmt_rate(row['last_rate'])} {code} on "
+                        f"{last_day}."
+                    )
+                )
+
+            with spark_col:
+                track = window[window["quote_code"] == code]
+                if len(track) >= 2:
+                    st.plotly_chart(
+                        sparkline(indexed(track), gained), use_container_width=True
+                    )
+                    st.caption(esc(f"{code} vs {base_code} · indexed to 100"))
+                else:
+                    st.caption("Not enough points to chart.")
+
+            # The two sentences, kept as they were - without the tinted banners.
+            verb = "Gained" if ending >= amount else "Lost"
+            st.markdown(
+                esc(
+                    f"**{money(amount)} Investment {verb}:** A {money(amount)} investment in "
+                    f"the {row['name']} on {first_day} would be worth {money(ending)} on "
+                    f"{last_day}."
+                )
+            )
+
+            if gained:
+                st.markdown(
+                    esc(
+                        f"\U0001F30D Your {base_name} buys fewer {plural(row['name'])} than it "
+                        f"did on {first_day}, so expect things to feel slightly more "
+                        f"expensive there as a traveller."
+                    )
+                )
+            elif change < 0:
+                st.markdown(
+                    esc(
+                        f"\U0001F30D Your {base_name} buys more {plural(row['name'])} than it "
+                        f"did on {first_day}, so expect things to feel slightly cheaper "
+                        f"there as a traveller."
+                    )
+                )
+            else:
+                st.markdown(
+                    esc(
+                        f"\U0001F30D Purchases as a traveller using the {base_name} should "
+                        f"cost about the same where the {row['name']} is used."
+                    )
+                )
+
+    frames, labels, colors, dashes = [], [], [], []
+    for code in picked:
+        track = window[window["quote_code"] == code]
+        if len(track) >= 2:
+            row = changes[changes["quote_code"] == code].iloc[0]
+            frames.append(indexed(track))
+            labels.append(code)
+            colors.append(COLORS["up"] if row["pct_change"] > 0 else COLORS["down"])
+            # solid, then dashed: two currencies that both fell are both red, so
+            # the dash is what tells them apart
+            dashes.append("solid" if len(frames) == 1 else "dash")
+
+    if frames:
+        st.plotly_chart(
+            comparison_chart(frames, labels, colors, dashes), use_container_width=True
+        )
+        st.caption(
+            f"Value against the {base_code}, both set to 100 on {first_day}. A rising "
+            f"line means the currency gained value, so each line ends at 100 plus its "
+            f"percent change. Blue gained, red lost; the dashed line is the second "
+            f"currency."
+        )
+
+    # The written summary comes last, because unlike everything above it does not
+    # follow the sidebar: it is one fixed paragraph over its own rolling window.
+    if not summary_text:
+        st.info("No written summary yet. Run `python src/summary.py` to generate one.")
+    else:
+        label = (
+            f"Daily written summary — {summary_meta.get('start')} to {summary_meta.get('end')}"
+            if meta_start and meta_end
+            else "Daily written summary"
+        )
+        with st.expander(label, expanded=True):
+            if meta_end and meta_end < FULL_END:
+                st.warning(
+                    f"Written from data up to {meta_end}, but the database now runs to "
+                    f"{FULL_END}. Re-run `python src/summary.py` to refresh it."
+                )
+            meta_top = summary_meta.get("top") or {}
+            meta_bottom = summary_meta.get("bottom") or {}
+            if meta_top.get("code") and meta_bottom.get("code"):
+                g1, g2 = st.columns(2)
+                g1.metric(
+                    "Biggest gainer vs USD",
+                    f"{meta_top['code']} {meta_top.get('pct_change', 0):+.2f}%",
+                    help=meta_top.get("name"),
+                )
+                g2.metric(
+                    "Biggest loser vs USD",
+                    f"{meta_bottom['code']} {meta_bottom.get('pct_change', 0):+.2f}%",
+                    help=meta_bottom.get("name"),
+                )
+            # the same two currencies over the same window the paragraph describes,
+            # independent of the sidebar - otherwise the chart beside the summary
+            # shows a different period than the summary is talking about
+            if meta_start and meta_end and meta_top.get("code") and meta_bottom.get("code"):
+                sum_changes, sum_window, _ = changes_for("USD", meta_start, meta_end)
+                s_frames, s_labels, s_colors, s_dashes = [], [], [], []
+                for code in (meta_top["code"], meta_bottom["code"]):
+                    track = sum_window[sum_window["quote_code"] == code]
+                    row = sum_changes[sum_changes["quote_code"] == code]
+                    if len(track) >= 2 and not row.empty:
+                        s_frames.append(indexed(track))
+                        s_labels.append(code)
+                        s_colors.append(
+                            COLORS["up"] if row.iloc[0]["pct_change"] > 0 else COLORS["down"]
+                        )
+                        s_dashes.append("solid" if len(s_frames) == 1 else "dash")
+                if s_frames:
+                    st.plotly_chart(
+                        comparison_chart(s_frames, s_labels, s_colors, s_dashes),
+                        use_container_width=True,
+                    )
+                    st.caption(
+                        f"{' and '.join(s_labels)} against the USD over the summary's own "
+                        f"window, both set to 100 on {meta_start}."
+                    )
+
+            st.markdown(esc(summary_text))
+            st.caption(
+                "Rewritten once a day over its own rolling window, so it does not "
+                "follow the sidebar. The figures above do."
+            )
+
+
+# --- Rankings -----------------------------------------------------------------
+with tab_rankings:
+    st.subheader(f"Biggest movers against the {base_code}")
+    st.caption(
+        f"Change in value between {first_day} and {last_day}, out of "
+        f"{len(changes)} currencies. Blue gained, red lost. Hover a bar for the exact figure."
+    )
+
+    # changes is sorted descending, so head(n) alone is "top n gainers" - with ~170
+    # currencies a small n means the chart never shows a single loser, however the
+    # legend is labelled. Take from both ends by default.
+    pick_col, count_col = st.columns([2, 1])
+    with pick_col:
+        view = st.radio(
+            "Show", ["Both ends", "Top gainers", "Biggest losers"], horizontal=True
+        )
+    with count_col:
+        show_count = st.selectbox("How many", [6, 10, 20, 50, 100], index=1)
+
+    if view == "Top gainers":
+        ranked = changes.head(show_count).copy()
+    elif view == "Biggest losers":
+        ranked = changes.tail(show_count).copy()
+    else:
+        half = max(1, show_count // 2)
+        ranked = (
+            pd.concat([changes.head(half), changes.tail(half)])
+            .drop_duplicates("quote_code")
+            .sort_values("pct_change", ascending=False)
+            .copy()
+        )
+    ranked["direction"] = ranked["pct_change"].apply(
+        lambda v: "Gained" if v >= 0 else "Lost"
+    )
+
     bar_figure = px.bar(
-        changes_df,
+        ranked,
         x="pct_change",
         y="quote_code",
         orientation="h",
         color="direction",
         custom_data=["name"],
-        color_discrete_map={"Gained": "#2e7d32", "Lost": "#c62828"},
-        labels={"quote_code": "Currency", "pct_change": f"% change vs {base_code}", "direction": ""},
+        color_discrete_map={"Gained": COLORS["up"], "Lost": COLORS["down"]},
+        labels={
+            "quote_code": "Currency",
+            "pct_change": f"% change vs {base_code}",
+            "direction": "",
+        },
+        text="pct_change" if show_count <= 20 else None,
     )
-    # Horizontal bars so every currency code sits right next to its own bar and stays readable
-    bar_codes = list(changes_df["quote_code"])
+    order = list(ranked["quote_code"])
     bar_figure.update_yaxes(
         categoryorder="array",
-        categoryarray=bar_codes[::-1],
+        categoryarray=order[::-1],
         tickmode="array",
-        tickvals=bar_codes,
-        ticktext=bar_codes,
+        tickvals=order,
+        ticktext=order,
         tickfont={"size": 11},
+        title=None,
     )
-    bar_figure.update_xaxes(side="top")
-    bar_figure.update_layout(height=450, bargap=0.3)    
+    bar_figure.update_xaxes(
+        side="top", gridcolor=COLORS["grid"], zerolinecolor=COLORS["axis"]
+    )
+    # height follows the number of bars instead of a fixed 450px, so 100 rows are
+    # not crushed into the same space as 5
+    bar_figure.update_layout(
+        height=max(280, 26 * len(ranked) + 120),
+        bargap=0.3,
+        margin={"l": 0, "r": 0, "t": 50, "b": 0},
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.08, "x": 0},
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+    )
+    if show_count <= 20:
+        bar_figure.update_traces(
+            texttemplate="%{x:+.2f}%", textposition="outside", cliponaxis=False
+        )
     bar_figure.update_traces(
-        hovertemplate="<b>%{y}</b>: %{customdata[0]}<br>%{x:+.2f}% vs " + base_code + "<extra></extra>"
+        hovertemplate="<b>%{y}</b>: %{customdata[0]}<br>%{x:+.2f}% vs "
+        + base_code
+        + "<extra></extra>"
     )
     st.plotly_chart(bar_figure, use_container_width=True)
 
-st.subheader("Rate history")
-st.dataframe(
-    selected_rates.sort_values("date", ascending=False),
-    hide_index=True,
-    use_container_width=True,
-)
+    if last_date - first_date > timedelta(days=400):
+        st.caption(
+            "Note: over a span this long, currencies whose data starts later are "
+            "compared across a shorter window than the rest."
+        )
 
-# Prepare exchange-rate data for the chatbot
-data_context = selected_rates[
-    ["date", "base_code", "quote_code", "rate"]
-].to_string(index=False)
+    if broken:
+        names = ", ".join(
+            f"{code} ({currency_info.get(code, (code, ''))[0]}, {day})"
+            for code, day in sorted(broken.items())
+        )
+        st.caption(
+            f"Left out as not comparable: {names}. These were redenominated inside "
+            f"this period — the currency was reissued at a new scale, so the rates "
+            f"before and after are in different units and any percent change across "
+            f"the break would be meaningless."
+        )
 
-# Display the chatbot
-show_chat(data_context)
+    with st.expander("View as a table"):
+        st.dataframe(
+            changes.rename(
+                columns={
+                    "quote_code": "Code",
+                    "name": "Currency",
+                    "first_rate": f"Rate on {first_date}",
+                    "last_rate": f"Rate on {last_date}",
+                    "pct_change": "% change",
+                }
+            ),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+
+# --- Trend --------------------------------------------------------------------
+with tab_trend:
+    all_quotes = sorted(base_rates["quote_code"].dropna().unique())
+    # XAU, XAG, XDR and friends are metals and accounting units, not a country's
+    # money. They are already excluded from the rankings; keep them out of the
+    # picker too unless they are asked for.
+    special = [c for c in all_quotes if c in NON_COUNTRY_CODES]
+    quote_codes = [c for c in all_quotes if c not in NON_COUNTRY_CODES]
+
+    pick_col, toggle_col = st.columns([3, 1])
+    with toggle_col:
+        if special and st.checkbox("Metals & IMF units", value=False):
+            quote_codes = quote_codes + special
+    with pick_col:
+        quote_code = st.selectbox(
+            "Currency to chart",
+            quote_codes,
+            index=quote_codes.index(top_code) if top_code in quote_codes else 0,
+            format_func=selector_label,
+        )
+
+    pair_rates = base_rates[base_rates["quote_code"] == quote_code].sort_values("date")
+    pair_rates = pair_rates[
+        (pair_rates["date"].dt.date >= start_date)
+        & (pair_rates["date"].dt.date <= end_date)
+    ]
+
+    if pair_rates.empty:
+        st.warning(
+            f"No {quote_code} data in this date range. Widen the period in the sidebar."
+        )
+    else:
+        latest_rate = pair_rates.iloc[-1]
+        first_pair, last_pair = pair_rates.iloc[0]["rate"], latest_rate["rate"]
+
+        k1, k2, k3 = st.columns(3)
+        k1.metric(f"1 {base_code} in {quote_code}", fmt_rate(last_pair))
+        k2.metric(
+            "Change over the period",
+            f"{(last_pair / first_pair - 1) * 100:+.2f}%" if first_pair else "n/a",
+        )
+        k3.metric("Latest observation", latest_rate["date"].strftime("%Y-%m-%d"))
+
+        st.subheader(
+            esc(f"{chart_label(base_code)} to {chart_label(quote_code)} over time")
+        )
+        figure = px.line(
+            pair_rates,
+            x="date",
+            y="rate",
+            labels={"date": "Date", "rate": f"Rate ({quote_code})"},
+        )
+        # markers only when there are few enough points to see them
+        figure.update_traces(
+            line={"color": COLORS["line"], "width": 2},
+            mode="lines+markers" if len(pair_rates) <= 120 else "lines",
+            marker={"size": 8},
+            hovertemplate="%{x|%Y-%m-%d}<br>%{y:.6g} " + quote_code + "<extra></extra>",
+        )
+        figure.update_xaxes(gridcolor=COLORS["grid"], title=None)
+        figure.update_yaxes(gridcolor=COLORS["grid"])
+        figure.update_layout(
+            height=380,
+            margin={"l": 0, "r": 0, "t": 10, "b": 0},
+            hovermode="x unified",
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            showlegend=False,
+        )
+        st.plotly_chart(figure, use_container_width=True)
+
+        with st.expander(f"Rate history ({len(pair_rates):,} rows)"):
+            st.dataframe(
+                pair_rates[["date", "base_code", "quote_code", "rate"]].sort_values(
+                    "date", ascending=False
+                ),
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                    "base_code": "Base",
+                    "quote_code": "Quote",
+                    "rate": st.column_config.NumberColumn("Rate", format="%.6g"),
+                },
+            )
+
+
+# --- Ask ----------------------------------------------------------------------
+with tab_ask:
+    st.subheader("Ask about this data")
+    st.caption(
+        f"The chatbot sees one row per currency for {long_date(start_date)} to "
+        f"{long_date(end_date)} in {base_code}: percent change, the rate on the first "
+        f"and last day, and what {money(amount)} would have become. Change the base, "
+        f"period or amount in the sidebar to change what it can see."
+    )
+    # build_chat_context summarises every currency into one line each, so the whole
+    # window fits in the prompt regardless of how many days it spans
+    data_context = build_chat_context(window, base_code, amount)
+    show_chat(data_context)

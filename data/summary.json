@@ -1,0 +1,19 @@
+{
+  "base": "USD",
+  "start": "2026-10-08",
+  "end": "2026-10-29",
+  "window_days": 30,
+  "generated": "2026-10-29",
+  "top": {
+    "code": "RUB",
+    "name": "Russian Ruble",
+    "pct_change": 6.1701,
+    "hundred_becomes": 106.17
+  },
+  "bottom": {
+    "code": "IQD",
+    "name": "Iraqi Dinar",
+    "pct_change": -13.5205,
+    "hundred_becomes": 86.48
+  }
+}
