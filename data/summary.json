@@ -1,19 +1,19 @@
 {
   "base": "USD",
-  "start": "2026-10-08",
-  "end": "2026-10-29",
+  "start": "2026-10-15",
+  "end": "2026-11-12",
   "window_days": 30,
-  "generated": "2026-10-29",
+  "generated": "2026-11-12",
   "top": {
-    "code": "RUB",
-    "name": "Russian Ruble",
-    "pct_change": 6.1701,
-    "hundred_becomes": 106.17
+    "code": "SLE",
+    "name": "New Leone",
+    "pct_change": 2.9072,
+    "hundred_becomes": 102.91
   },
   "bottom": {
-    "code": "IQD",
-    "name": "Iraqi Dinar",
-    "pct_change": -13.5205,
-    "hundred_becomes": 86.48
+    "code": "XRP",
+    "name": "XRP",
+    "pct_change": -21.2768,
+    "hundred_becomes": 78.72
   }
 }
