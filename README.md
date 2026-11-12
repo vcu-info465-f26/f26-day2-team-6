@@ -18,8 +18,9 @@ The second endpoint retrieves information about currencies, including the countr
 The data from both endpoints is then brought together in the Build.db database. By combining the exchange rate, date, country, and currency symbol, the database creates a centralized dataset that can be used for comparison, analysis, and review.
 
 Achievement: 
-Our code runs, it pulls real data from two Frankfuter API endpoints, it writes dated snapshots, it
-loads them into a database. That data is used to generate a factial summery about currency rates. I provides factial information queried from a chatbot. The data is then automatically refreshresed daily to keep up with real time changes. 
+Our code runs, it pulls real data from two Frankfuter API endpoints, it writes dated snapshots, and loads them into a database. That data is used to generate a factual summery about currency rates. It provides factual information queried from a chatbot. The data is then automatically refreshresed daily to keep up with real time changes. 
+
+The AI summary is a built in Summary.py and updates daily with a 30 day window of exchange rate data. Secrets needed: GROQ_API_KEY
 
 Hassan - Tester
 Alana - Project Manager
