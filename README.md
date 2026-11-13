@@ -20,11 +20,14 @@ The data from both endpoints is then brought together in the Build.db database. 
 Achievement: 
 Our code runs, it pulls real data from two Frankfuter API endpoints, it writes dated snapshots, and loads them into a database. That data is used to generate a factual summery about currency rates. It provides factual information queried from a chatbot. The data is then automatically refreshresed daily to keep up with real time changes. 
 
-The AI summary is a built in Summary.py and updates daily with a 30 day window of exchange rate data. Secrets needed: GROQ_API_KEY
+The AI summary is built in Summary.py and updates daily with a 30 day window of exchange rate data. Secrets needed: GROQ_API_KEY
 
 Hassan - Tester
+
 Alana - Project Manager
+
 Shanika - Reviewer
+
 Amare - Review
 
 
