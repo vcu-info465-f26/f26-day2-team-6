@@ -1,19 +1,19 @@
 {
   "base": "USD",
   "start": "2026-10-15",
-  "end": "2026-11-12",
+  "end": "2026-11-14",
   "window_days": 30,
-  "generated": "2026-11-12",
+  "generated": "2026-11-14",
   "top": {
     "code": "SLE",
     "name": "New Leone",
-    "pct_change": 2.9072,
-    "hundred_becomes": 102.91
+    "pct_change": 2.3493,
+    "hundred_becomes": 102.35
   },
   "bottom": {
     "code": "XRP",
     "name": "XRP",
-    "pct_change": -21.2768,
-    "hundred_becomes": 78.72
+    "pct_change": -24.0652,
+    "hundred_becomes": 75.93
   }
 }
