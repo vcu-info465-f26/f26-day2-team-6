@@ -2,10 +2,10 @@ Currency Conversion Rates Dashboard
 Frankfuter API
 
 Story Goal:
-By November 12th, we can answer one real question about currency exchange rates by running a SQL query across data our code has been collecting since September 10.
+By November 19, someone using our dashboard will no longer see cryptocurrencies mixed in with traditional currencies. Crypto gets its own tab, where Bitcoin and the others are only compared to each other. Traditional currencies stay in the main charts and rankings, each with a small country flag beside it so a visitor can tell at a glance where that currency comes from.
 
 Story Line:
-As an international investor, I want to access current currency exchange rates, along with the corresponding currency symbols and countries, so that I can stay informed about global currency values and make better-informed decisions when monitoring international financial markets.
+As an international investor, I want a brief inforamative summary of current international exchange rates data and to be able to query data via a chatbot so that I can stay informed about global currency values that interest me.
 
 Mission Statement:
 The purpose of this project is to collect and organize currency information from two related API endpoints so that users can easily query, review and compare currency data.
