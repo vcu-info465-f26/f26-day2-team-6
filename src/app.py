@@ -1,6 +1,7 @@
 # Run the code below in terminal to generate URLs for dashboard and interactive chart.
 # python -m streamlit run src/app.py
 
+import html
 import json
 import subprocess
 import sys
@@ -13,8 +14,11 @@ import sqlite3
 import streamlit as st
 
 from chat import build_chat_context, show_chat
+from countries import COUNTRY_CURRENCY, COUNTRY_NAMES
 from rates_util import (
     NON_COUNTRY_CODES,
+    asset_type,
+    flag_url,
     invest_one,
     load_currency_info,
     long_date,
@@ -83,9 +87,25 @@ def data_token():
     return max(stamps, default=0.0)
 
 
+def missing_type_column():
+    """True if the db was built before currencies were split into asset types.
+
+    Such a database has no `type` column on `currencies`, so it has to be
+    rebuilt even when its timestamp is newer than every json file.
+    """
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(currencies)")}
+    except sqlite3.Error:
+        return True
+    return "type" not in columns
+
+
 def db_is_stale():
-    """True if the db is missing or older than the json files it was built from."""
+    """True if the db is missing, out of date, or built to the old schema."""
     if not DB_PATH.exists():
+        return True
+    if missing_type_column():
         return True
     built = DB_PATH.stat().st_mtime
     return any(p.stat().st_mtime > built for p in SRC_DATA_DIR.glob("*.json"))
@@ -101,6 +121,7 @@ def load_data(token):
                    exchange_rates.quote_code,
                    currencies.name,
                    currencies.symbol,
+                   currencies.type,
                    exchange_rates.rate
             FROM exchange_rates
             JOIN currencies
@@ -134,6 +155,20 @@ if rates.empty:
 ALL_DAYS = rates["date"].dt.date
 FULL_START, FULL_END = ALL_DAYS.min(), ALL_DAYS.max()
 currency_info = load_currency_info(DB_PATH)
+
+# Which group every code belongs to, read once from the frame. Frankfurter
+# started publishing cryptocurrencies through the same endpoint as national
+# currencies in November 2026, and until this split they were ranked side by
+# side - Bitcoin's run since 2020 sat at the top of "biggest gainer" as if it
+# were a country's money. CRYPTO_CODES is what the Crypto tab shows and what
+# every other tab leaves out.
+ASSET_TYPES = {
+    code: asset_type(code, kind)
+    for code, kind in rates.drop_duplicates("quote_code")[
+        ["quote_code", "type"]
+    ].values
+}
+CRYPTO_CODES = {code for code, kind in ASSET_TYPES.items() if kind == "crypto"}
 
 
 # These close over `rates`, which is itself cached and does not change during a
@@ -178,6 +213,9 @@ def changes_for(base, start, end):
     frame = rebased(base)
     days = frame["date"].dt.date
     window = frame[(days >= start) & (days <= end)]
+    # cryptocurrencies are compared with each other on their own tab, never
+    # against a country's money
+    window = window[~window["quote_code"].isin(CRYPTO_CODES)]
     # a currency that was redenominated inside this window has endpoints in
     # different units, so its percent change is not a real move
     broken = redenominated(window)
@@ -185,10 +223,72 @@ def changes_for(base, start, end):
     return pct_changes(comparable, base), window, broken
 
 
+@st.cache_data(max_entries=16)
+def crypto_changes_for(base, start, end):
+    """The same calculation over cryptocurrencies only, for the Crypto tab."""
+    frame = rebased(base)
+    days = frame["date"].dt.date
+    window = frame[(days >= start) & (days <= end)]
+    window = window[window["quote_code"].isin(CRYPTO_CODES)]
+    return pct_changes(window, base, scope="crypto"), window
+
+
 def selector_label(code):
-    """'USD' -> 'USD - United States Dollar $', used in every currency dropdown."""
+    """'USD' -> 'USD - United States Dollar $', used in every currency dropdown.
+
+    No flag here: a dropdown label is plain text, so a flag could only be an
+    emoji, and the platforms that lack the font would show two stray letters in
+    front of every currency. The flags live in the rankings table, where a real
+    image can be drawn.
+    """
     name, symbol = currency_info.get(code, (code, ""))
     return f"{code} - {name} {symbol}".strip()
+
+
+def flag_image(code, size=16):
+    """The <img> for a currency's flag, or "" where no one flag fits it.
+
+    An image rather than a flag emoji: emoji need a font the reader may not
+    have, and Chrome on Windows and Linux draws them as two letters.
+    """
+    url = flag_url(code, ASSET_TYPES.get(code))
+    if not url:
+        return ""
+    name = html.escape(currency_info.get(code, (code, ""))[0])
+    return (
+        f'<img src="{url}" alt="" title="{name}" style="height:{size}px;'
+        f"border-radius:2px;vertical-align:-3px;margin-right:6px;"
+        f'box-shadow:0 0 0 1px rgba(128,128,128,.25)">'
+    )
+
+
+def help_text(code):
+    """What the question mark beside a figure reveals: flag, then full name.
+
+    Streamlit renders help as markdown, and markdown can carry an image, so
+    this is the one tooltip in the app that can show a real flag. A small
+    flagcdn size, because the tooltip draws it at its natural width.
+    """
+    name = currency_info.get(code, (code, ""))[0]
+    url = flag_url(code, ASSET_TYPES.get(code), "w20")
+    return f"![]({url}) {name}" if url else name
+
+
+def currency_chip(code, size=16):
+    """A flag and the currency's full name, to sit under a bare code.
+
+    Anywhere the dashboard shows only a code - a headline figure, a chart
+    label - this says what the code stands for, so USD reads as the United
+    States Dollar and BTC as Bitcoin. Hovering the name shows it too, which is
+    what the title attribute is for. Cryptocurrencies get the name without a
+    flag: they belong to no country.
+    """
+    name = html.escape(currency_info.get(code, (code, ""))[0])
+    return (
+        f'<div style="font-size:0.85rem;color:#898781;margin-top:-0.4rem;'
+        f'margin-bottom:0.6rem">{flag_image(code, size)}'
+        f'<span title="{name}">{name}</span></div>'
+    )
 
 
 def chart_label(code):
@@ -250,6 +350,13 @@ def comparison_chart(frames, labels, colors, dashes):
         labels={"date": "Date", "value": "Indexed to 100", "series": ""},
     )
     figure.update_traces(line={"width": 2}, hovertemplate="%{x|%Y-%m-%d}: %{y:.1f}<extra></extra>")
+    # A series with only a handful of points draws a stub at one edge - a coin
+    # that arrived last week against one with six years of history is a line a
+    # few pixels long, easy to mistake for a missing series. Markers make those
+    # points visible without changing anything about the long series.
+    for trace in figure.data:
+        if trace.x is not None and len(trace.x) <= 30:
+            trace.update(mode="lines+markers", marker={"size": 6})
     figure.update_xaxes(gridcolor=COLORS["grid"], title=None)
     figure.update_yaxes(gridcolor=COLORS["grid"])
     figure.update_layout(
@@ -316,7 +423,11 @@ with st.sidebar:
     st.header("Controls")
     st.caption("These settings drive every tab.")
 
-    base_codes = sorted((set(rates["quote_code"]) | {"USD"}) - NON_COUNTRY_CODES)
+    # a base is something you hold and spend, so this stays on national
+    # currencies: no crypto, no metals, no IMF units
+    base_codes = sorted(
+        {code for code, kind in ASSET_TYPES.items() if kind == "currency"} | {"USD"}
+    )
     base_code = st.selectbox(
         "Base currency",
         base_codes,
@@ -414,34 +525,42 @@ hero_1, hero_2, hero_3 = st.columns(3)
 hero_1.metric(
     f"Gained most vs {base_code}",
     f"{top_row['quote_code']}  {top_row['pct_change']:+.2f}%",
-    help=str(top_row["name"]),
+    help=help_text(top_row["quote_code"]),
 )
 hero_2.metric(
     f"Lost most vs {base_code}",
     f"{bottom_row['quote_code']}  {bottom_row['pct_change']:+.2f}%",
-    help=str(bottom_row["name"]),
+    help=help_text(bottom_row["quote_code"]),
 )
 hero_3.metric("Data through", str(FULL_END), help=f"{len(rates):,} stored observations")
+hero_1.markdown(currency_chip(top_row["quote_code"]), unsafe_allow_html=True)
+hero_2.markdown(currency_chip(bottom_row["quote_code"]), unsafe_allow_html=True)
 
 st.divider()
 
-tab_summary, tab_rankings, tab_trend, tab_ask = st.tabs(
-    ["Summary", "Rankings", "Trend", "Ask"]
+(
+    tab_insights,
+    tab_daily,
+    tab_rankings,
+    tab_map,
+    tab_trend,
+    tab_crypto,
+    tab_ask,
+) = st.tabs(
+    [
+        "Conversion Insights",
+        "Daily Summary",
+        "Rankings",
+        "Map",
+        "Trend",
+        "Crypto",
+        "Ask",
+    ]
 )
 
 
-# --- Summary ------------------------------------------------------------------
-with tab_summary:
-    summary_text, summary_meta = load_summary()
-
-    meta_start = meta_end = None
-    try:
-        if summary_meta.get("start") and summary_meta.get("end"):
-            meta_start = date.fromisoformat(summary_meta["start"])
-            meta_end = date.fromisoformat(summary_meta["end"])
-    except (ValueError, TypeError):
-        meta_start = meta_end = None
-
+# --- Conversion Insights ------------------------------------------------------------------
+with tab_insights:
     st.subheader("What moved, and what it means")
     st.caption(
         f"Every figure here is calculated in Python from the stored rates between "
@@ -480,7 +599,11 @@ with tab_summary:
         gained = change > 0
 
         with st.container(border=True):
-            st.markdown(esc(f"#### {row['name']} ({code})"))
+            st.markdown(
+                f'<h4 style="margin:0 0 .5rem 0">{flag_image(code, 22)}'
+                f'{html.escape(str(row["name"]))} ({code})</h4>',
+                unsafe_allow_html=True,
+            )
 
             facts_col, spark_col = st.columns([3, 2])
 
@@ -574,8 +697,23 @@ with tab_summary:
             f"currency."
         )
 
-    # The written summary comes last, because unlike everything above it does not
-    # follow the sidebar: it is one fixed paragraph over its own rolling window.
+
+
+# --- Daily Summary -----------------------------------------------------------
+with tab_daily:
+    summary_text, summary_meta = load_summary()
+
+    meta_start = meta_end = None
+    try:
+        if summary_meta.get("start") and summary_meta.get("end"):
+            meta_start = date.fromisoformat(summary_meta["start"])
+            meta_end = date.fromisoformat(summary_meta["end"])
+    except (ValueError, TypeError):
+        meta_start = meta_end = None
+
+    # Unlike every other tab this one does not follow the sidebar: it is one
+    # fixed paragraph written over its own rolling window by summary.py, and it
+    # changes when that script next runs, not when the controls move.
     if not summary_text:
         st.info("No written summary yet. Run `python src/summary.py` to generate one.")
     else:
@@ -584,7 +722,8 @@ with tab_summary:
             if meta_start and meta_end
             else "Daily written summary"
         )
-        with st.expander(label, expanded=True):
+        st.subheader(label)
+        with st.container():
             if meta_end and meta_end < FULL_END:
                 st.warning(
                     f"Written from data up to {meta_end}, but the database now runs to "
@@ -592,17 +731,39 @@ with tab_summary:
                 )
             meta_top = summary_meta.get("top") or {}
             meta_bottom = summary_meta.get("bottom") or {}
+            # the written summary is produced by summary.py on a schedule, so
+            # one written before cryptocurrencies were separated out can still
+            # be sitting here ranking Ethereum against the Seychellois rupee
+            mixed = [
+                code
+                for code in (meta_top.get("code"), meta_bottom.get("code"))
+                if code in CRYPTO_CODES
+            ]
+            if mixed:
+                st.warning(
+                    f"This summary ranks {', '.join(mixed)} against national "
+                    f"currencies, so it was written before the two were "
+                    f"separated. Re-run `python src/summary.py` to rewrite it."
+                )
             if meta_top.get("code") and meta_bottom.get("code"):
                 g1, g2 = st.columns(2)
                 g1.metric(
                     "Biggest gainer vs USD",
                     f"{meta_top['code']} {meta_top.get('pct_change', 0):+.2f}%",
-                    help=meta_top.get("name"),
+                    help=help_text(meta_top["code"]),
                 )
                 g2.metric(
                     "Biggest loser vs USD",
                     f"{meta_bottom['code']} {meta_bottom.get('pct_change', 0):+.2f}%",
-                    help=meta_bottom.get("name"),
+                    help=help_text(meta_bottom["code"]),
+                )
+                # the same flag and name the charts above carry, so the written
+                # summary is not the one place a bare code stands on its own
+                g1.markdown(
+                    currency_chip(meta_top["code"]), unsafe_allow_html=True
+                )
+                g2.markdown(
+                    currency_chip(meta_bottom["code"]), unsafe_allow_html=True
                 )
             # the same two currencies over the same window the paragraph describes,
             # independent of the sidebar - otherwise the chart beside the summary
@@ -636,7 +797,6 @@ with tab_summary:
                 "follow the sidebar. The figures above do."
             )
 
-
 # --- Rankings -----------------------------------------------------------------
 with tab_rankings:
     st.subheader(f"Biggest movers against the {base_code}")
@@ -644,6 +804,11 @@ with tab_rankings:
         f"Change in value between {first_day} and {last_day}, out of "
         f"{len(changes)} currencies. Blue gained, red lost. Hover a bar for the exact figure."
     )
+    if CRYPTO_CODES:
+        st.caption(
+            f"National currencies only. The {len(CRYPTO_CODES)} cryptocurrencies in "
+            f"this data are on the Crypto tab, compared with each other."
+        )
 
     # changes is sorted descending, so head(n) alone is "top n gainers" - with ~170
     # currencies a small n means the chart never shows a single loser, however the
@@ -714,6 +879,30 @@ with tab_rankings:
         bar_figure.update_traces(
             texttemplate="%{x:+.2f}%", textposition="outside", cliponaxis=False
         )
+
+    # A flag at the foot of each bar, on the far side of the zero line so it
+    # never covers the bar itself. Positions are in data units rather than
+    # pixels, so they hold wherever the chart is resized, and the gap and the
+    # flag scale with the axis instead of drifting across it.
+    span = float(ranked["pct_change"].abs().max()) or 1.0
+    bar_figure.update_layout(
+        images=[
+            {
+                "source": flag_url(row.quote_code, ASSET_TYPES.get(row.quote_code)),
+                "xref": "x",
+                "yref": "y",
+                "x": -0.012 * span if row.pct_change >= 0 else 0.012 * span,
+                "y": row.quote_code,
+                "sizex": 0.05 * span,
+                "sizey": 0.66,
+                "xanchor": "right" if row.pct_change >= 0 else "left",
+                "yanchor": "middle",
+                "layer": "above",
+            }
+            for row in ranked.itertuples()
+            if flag_url(row.quote_code, ASSET_TYPES.get(row.quote_code))
+        ]
+    )
     bar_figure.update_traces(
         hovertemplate="<b>%{y}</b>: %{customdata[0]}<br>%{x:+.2f}% vs "
         + base_code
@@ -740,8 +929,18 @@ with tab_rankings:
         )
 
     with st.expander("View as a table"):
+        ranked_table = changes.copy()
+        # the flag goes in its own image column, so it renders the same on every
+        # platform; the cell is simply empty for a currency no one country owns
+        ranked_table.insert(
+            0,
+            "Flag",
+            ranked_table["quote_code"].map(
+                lambda code: flag_url(code, ASSET_TYPES.get(code))
+            ),
+        )
         st.dataframe(
-            changes.rename(
+            ranked_table.rename(
                 columns={
                     "quote_code": "Code",
                     "name": "Currency",
@@ -752,29 +951,225 @@ with tab_rankings:
             ),
             hide_index=True,
             use_container_width=True,
+            column_config={
+                "Flag": st.column_config.ImageColumn(
+                    "", width="small", help="The country this currency belongs to"
+                )
+            },
+        )
+
+
+# --- Map ----------------------------------------------------------------------
+with tab_map:
+    st.subheader(
+        f"Where money gained and lost against the {base_code}, "
+        f"{first_day} to {last_day}",
+        help=help_text(base_code),
+    )
+
+    # One currency can cover many countries - the euro covers 36 of them, the
+    # CFA francs cover 14 between them - so the map is drawn per country from
+    # the ISO country-to-currency table, not per currency.
+    move_of = dict(zip(changes["quote_code"], changes["pct_change"]))
+    currency_name_of = dict(zip(changes["quote_code"], changes["name"]))
+
+    map_rows = []
+    for alpha3, code in COUNTRY_CURRENCY.items():
+        if code == base_code:
+            # the base cannot move against itself: it is the zero of the scale
+            change = 0.0
+        elif code in move_of:
+            change = float(move_of[code])
+        else:
+            continue
+        map_rows.append(
+            {
+                "country": alpha3,
+                "country_name": COUNTRY_NAMES.get(alpha3, alpha3),
+                "code": code,
+                "currency": currency_name_of.get(code, code),
+                "pct_change": change,
+            }
+        )
+    map_data = pd.DataFrame(map_rows)
+
+    if map_data.empty:
+        st.info(
+            "No currency in this date range can be placed on the map. Widen the "
+            "period in the sidebar."
+        )
+    else:
+        # A single currency can flatten every other colour: over the full
+        # history the bolivar moved thousands of percent while most currencies
+        # moved single digits, and on one shared scale the whole world would
+        # read as "no change". So the colour saturates at the 90th percentile of
+        # the absolute moves, symmetric about zero so that a gain and a loss of
+        # the same size get the same strength of colour. Countries past that
+        # point keep the end colour; hovering always shows the true figure.
+        limit = max(float(map_data["pct_change"].abs().quantile(0.9)), 1.0)
+
+        map_figure = px.choropleth(
+            map_data,
+            locations="country",
+            locationmode="ISO-3",
+            color="pct_change",
+            hover_name="country_name",
+            custom_data=["currency", "code", "pct_change"],
+            color_continuous_scale=[COLORS["down"], "#f4f3ef", COLORS["up"]],
+            color_continuous_midpoint=0,
+            range_color=(-limit, limit),
+            labels={"pct_change": f"% vs {base_code}"},
+        )
+        map_figure.update_traces(
+            marker_line_color=COLORS["grid"],
+            marker_line_width=0.4,
+            # clicking a country selects it, and Plotly's default is to fade
+            # everything else to near-invisible. Keep the rest of the map at
+            # full strength: the point of the map is the whole picture.
+            unselected={"marker": {"opacity": 1}},
+            hovertemplate=(
+                "<b>%{hovertext}</b><br>%{customdata[0]} (%{customdata[1]})"
+                "<br>%{customdata[2]:+.2f}% vs " + base_code + "<extra></extra>"
+            ),
+        )
+        map_figure.update_geos(
+            projection_type="natural earth",
+            showframe=False,
+            showcoastlines=False,
+            showland=True,
+            landcolor=COLORS["grid"],
+            showocean=False,
+            bgcolor="rgba(0,0,0,0)",
+            # Antarctica has no currency and takes up a third of the frame
+            lataxis_range=[-58, 85],
+        )
+        map_figure.update_layout(
+            height=520,
+            margin={"l": 0, "r": 0, "t": 0, "b": 0},
+            paper_bgcolor="rgba(0,0,0,0)",
+            coloraxis_colorbar={
+                "title": f"% vs {base_code}",
+                "ticksuffix": "%",
+                "thickness": 14,
+                "len": 0.7,
+            },
+        )
+        # scroll wheel zoom is off: the map fills the width, so a reader
+        # scrolling the page would otherwise zoom the map instead. Dragging
+        # still pans it, and the toolbar still zooms.
+        # Plotly draws its hover label as plain text, so a flag cannot go
+        # inside it - an image in a hovertemplate is ignored. Clicking can do
+        # what hovering cannot: the country stays selected and its flag, name,
+        # currency and figure are drawn underneath in ordinary HTML.
+        map_event = st.plotly_chart(
+            map_figure,
+            use_container_width=True,
+            config={"scrollZoom": False},
+            on_select="rerun",
+            selection_mode="points",
+            key="map_selection",
+        )
+
+        chosen = []
+        try:
+            chosen = (map_event.get("selection") or {}).get("points") or []
+        except AttributeError:
+            chosen = []
+
+        if chosen:
+            point = chosen[0]
+            alpha3 = point.get("location")
+            picked_row = map_data[map_data["country"] == alpha3]
+            if not picked_row.empty:
+                row = picked_row.iloc[0]
+                st.markdown(
+                    f'<div style="display:flex;align-items:center;gap:10px;'
+                    f"padding:10px 14px;border:1px solid {COLORS['grid']};"
+                    f'border-radius:8px;margin-top:4px">'
+                    f"{flag_image(row['code'], 28)}"
+                    f'<div><b>{html.escape(str(row["country_name"]))}</b><br>'
+                    f'<span style="font-size:0.85rem;color:#898781">'
+                    f'{html.escape(str(row["currency"]))} ({row["code"]}) · '
+                    f'{row["pct_change"]:+.2f}% vs {base_code}</span></div></div>',
+                    unsafe_allow_html=True,
+                )
+
+                picked_code = row["code"]
+                detail = changes[changes["quote_code"] == picked_code]
+                if picked_code == base_code:
+                    st.markdown(
+                        f"- This country spends the {base_name}, which is the base "
+                        f"every other currency is measured against here, so it "
+                        f"cannot move against itself."
+                    )
+                elif not detail.empty:
+                    detail_row = detail.iloc[0]
+                    ending = invest_one(detail_row, amount)
+                    change = detail_row["pct_change"]
+                    if change > 0:
+                        travel = (
+                            f"buys fewer {plural(detail_row['name'])} than it did on "
+                            f"{first_day}, so expect things to feel slightly more "
+                            f"expensive there as a traveller"
+                        )
+                    elif change < 0:
+                        travel = (
+                            f"buys more {plural(detail_row['name'])} than it did on "
+                            f"{first_day}, so expect things to feel slightly cheaper "
+                            f"there as a traveller"
+                        )
+                    else:
+                        travel = (
+                            f"buys about as many {plural(detail_row['name'])} as it "
+                            f"did on {first_day}"
+                        )
+                    st.markdown(
+                        esc(
+                            f"- **{money(amount)}** put into the {detail_row['name']} "
+                            f"on {first_day} would be worth **{money(ending)}** on "
+                            f"{last_day} ({(ending / amount - 1) * 100:+.2f}%).\n"
+                            f"- 1 {base_code} bought "
+                            f"{fmt_rate(detail_row['first_rate'])} {picked_code} on "
+                            f"{first_day}, and {fmt_rate(detail_row['last_rate'])} "
+                            f"{picked_code} on {last_day}.\n"
+                            f"- \U0001F30D Your {base_name} {travel}."
+                        )
+                    )
+        else:
+            st.caption(
+                "Click a country to pin its flag here, with what it would have "
+                "done to a holding and what it means for a traveller. Hovering "
+                "gives the headline figure without the flag: a Plotly hover label "
+                "is plain text and cannot hold an image."
+            )
+
+        st.caption(
+            f"Change in each country's currency against the {base_code} between "
+            f"{first_day} and {last_day}. Blue gained, red lost, pale means it "
+            f"barely moved; countries on the {base_name} itself sit at zero, "
+            f"because the base is what everything else is measured against. "
+            f"Hover a country for its currency and exact figure, click it to pin "
+            f"its flag below, and drag to pan."
         )
 
 
 # --- Trend --------------------------------------------------------------------
 with tab_trend:
-    all_quotes = sorted(base_rates["quote_code"].dropna().unique())
-    # XAU, XAG, XDR and friends are metals and accounting units, not a country's
-    # money. They are already excluded from the rankings; keep them out of the
-    # picker too unless they are asked for.
-    special = [c for c in all_quotes if c in NON_COUNTRY_CODES]
-    quote_codes = [c for c in all_quotes if c not in NON_COUNTRY_CODES]
+    # National currencies only. Cryptocurrencies have a tab of their own, and
+    # gold, silver, the IMF's drawing right and the commodity index are not any
+    # country's money, so none of them belong in a currency picker.
+    quote_codes = [
+        code
+        for code in sorted(base_rates["quote_code"].dropna().unique())
+        if code not in CRYPTO_CODES and code not in NON_COUNTRY_CODES
+    ]
 
-    pick_col, toggle_col = st.columns([3, 1])
-    with toggle_col:
-        if special and st.checkbox("Metals & IMF units", value=False):
-            quote_codes = quote_codes + special
-    with pick_col:
-        quote_code = st.selectbox(
-            "Currency to chart",
-            quote_codes,
-            index=quote_codes.index(top_code) if top_code in quote_codes else 0,
-            format_func=selector_label,
-        )
+    quote_code = st.selectbox(
+        "Currency to chart",
+        quote_codes,
+        index=quote_codes.index(top_code) if top_code in quote_codes else 0,
+        format_func=selector_label,
+    )
 
     pair_rates = base_rates[base_rates["quote_code"] == quote_code].sort_values("date")
     pair_rates = pair_rates[
@@ -801,6 +1196,7 @@ with tab_trend:
         st.subheader(
             esc(f"{chart_label(base_code)} to {chart_label(quote_code)} over time")
         )
+        st.markdown(currency_chip(quote_code, 20), unsafe_allow_html=True)
         figure = px.line(
             pair_rates,
             x="date",
@@ -839,6 +1235,212 @@ with tab_trend:
                     "quote_code": "Quote",
                     "rate": st.column_config.NumberColumn("Rate", format="%.6g"),
                 },
+            )
+
+
+# --- Crypto -------------------------------------------------------------------
+with tab_crypto:
+    st.subheader(f"Cryptocurrencies against the {base_code}")
+
+    crypto_changes, crypto_window = crypto_changes_for(base_code, start_date, end_date)
+
+    if crypto_changes.empty:
+        st.info(
+            "No cryptocurrency has two or more observations in this date range, so "
+            "there is no change to measure yet. Widen the period in the sidebar."
+        )
+    else:
+        crypto_first = crypto_window["date"].min().date()
+        crypto_last = crypto_window["date"].max().date()
+        st.caption(
+            f"Change in value between {long_date(crypto_first)} and "
+            f"{long_date(crypto_last)}, across {len(crypto_changes)} of them. "
+            f"Blue gained, red lost. Crypto is measured the same way as the "
+            f"currencies but kept apart from them: most of these codes arrived in a "
+            f"single recent snapshot, so a joint ranking would compare one day's "
+            f"move with years of them. A coin with only one observation in this "
+            f"range is left out until it has two."
+        )
+
+        crypto_top = crypto_changes.iloc[0]
+        crypto_bottom = crypto_changes.iloc[-1]
+        crypto_1, crypto_2 = st.columns(2)
+        crypto_1.metric(
+            f"Gained most vs {base_code}",
+            f"{crypto_top['quote_code']}  {crypto_top['pct_change']:+.2f}%",
+            help=help_text(crypto_top["quote_code"]),
+        )
+        crypto_2.metric(
+            f"Lost most vs {base_code}",
+            f"{crypto_bottom['quote_code']}  {crypto_bottom['pct_change']:+.2f}%",
+            help=help_text(crypto_bottom["quote_code"]),
+        )
+        crypto_1.markdown(
+            currency_chip(crypto_top["quote_code"]), unsafe_allow_html=True
+        )
+        crypto_2.markdown(
+            currency_chip(crypto_bottom["quote_code"]), unsafe_allow_html=True
+        )
+
+        ranked_crypto = crypto_changes.copy()
+        ranked_crypto["direction"] = ranked_crypto["pct_change"].apply(
+            lambda v: "Gained" if v >= 0 else "Lost"
+        )
+        crypto_bars = px.bar(
+            ranked_crypto,
+            x="pct_change",
+            y="quote_code",
+            orientation="h",
+            color="direction",
+            custom_data=["name"],
+            color_discrete_map={"Gained": COLORS["up"], "Lost": COLORS["down"]},
+            labels={
+                "quote_code": "Crypto",
+                "pct_change": f"% change vs {base_code}",
+                "direction": "",
+            },
+            text="pct_change",
+        )
+        crypto_order = list(ranked_crypto["quote_code"])
+        crypto_bars.update_yaxes(
+            categoryorder="array",
+            categoryarray=crypto_order[::-1],
+            tickmode="array",
+            tickvals=crypto_order,
+            ticktext=crypto_order,
+            tickfont={"size": 11},
+            title=None,
+        )
+        crypto_bars.update_xaxes(
+            side="top", gridcolor=COLORS["grid"], zerolinecolor=COLORS["axis"]
+        )
+        crypto_bars.update_layout(
+            height=max(280, 26 * len(ranked_crypto) + 120),
+            bargap=0.3,
+            # room on the right for the outside label: a four-figure percent
+            # change is wide, and crypto produces those
+            margin={"l": 0, "r": 80, "t": 50, "b": 0},
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.08, "x": 0},
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+        )
+        crypto_bars.update_traces(
+            texttemplate="%{x:+.2f}%", textposition="outside", cliponaxis=False
+        )
+        crypto_bars.update_traces(
+            hovertemplate="<b>%{y}</b>: %{customdata[0]}<br>%{x:+.2f}% vs "
+            + base_code
+            + "<extra></extra>"
+        )
+        st.plotly_chart(crypto_bars, use_container_width=True)
+
+        st.divider()
+        st.subheader("Compare two cryptocurrencies")
+
+        crypto_codes = sorted(crypto_changes["quote_code"])
+        crypto_col_a, crypto_col_b = st.columns(2)
+        with crypto_col_a:
+            crypto_a = st.selectbox(
+                "First cryptocurrency",
+                crypto_codes,
+                index=crypto_codes.index(crypto_top["quote_code"]),
+                format_func=selector_label,
+                key="crypto_a",
+            )
+        with crypto_col_b:
+            crypto_b = st.selectbox(
+                "Second cryptocurrency",
+                crypto_codes,
+                index=crypto_codes.index(crypto_bottom["quote_code"]),
+                format_func=selector_label,
+                key="crypto_b",
+            )
+
+        if crypto_a == crypto_b:
+            st.info("Pick two different cryptocurrencies to compare them.")
+
+        crypto_picked = list(dict.fromkeys([crypto_a, crypto_b]))
+        crypto_frames, crypto_labels, crypto_colors, crypto_dashes = [], [], [], []
+        for code in crypto_picked:
+            track = crypto_window[crypto_window["quote_code"] == code]
+            row = crypto_changes[crypto_changes["quote_code"] == code]
+            if len(track) >= 2 and not row.empty:
+                crypto_frames.append(indexed(track))
+                crypto_labels.append(code)
+                crypto_colors.append(
+                    COLORS["up"] if row.iloc[0]["pct_change"] > 0 else COLORS["down"]
+                )
+                crypto_dashes.append("solid" if len(crypto_frames) == 1 else "dash")
+
+        # Each coin is indexed to its own first day in this range, and most of
+        # these arrived in the data only days ago - Filecoin has a week where
+        # Ethereum has six years. The window's own first day is therefore the
+        # wrong date to quote for the newcomer, both on the chart and in the
+        # sentence underneath, so every date here is the coin's own.
+        coin_span = {}
+        for code in crypto_picked:
+            track = crypto_window[crypto_window["quote_code"] == code]
+            if not track.empty:
+                coin_span[code] = (
+                    track["date"].min().date(),
+                    track["date"].max().date(),
+                )
+
+        if crypto_frames:
+            st.plotly_chart(
+                comparison_chart(
+                    crypto_frames, crypto_labels, crypto_colors, crypto_dashes
+                ),
+                use_container_width=True,
+            )
+            starts = {code: coin_span[code][0] for code in crypto_labels}
+            if len(set(starts.values())) == 1:
+                indexed_on = (
+                    f"both set to 100 on {long_date(next(iter(starts.values())))}"
+                )
+            else:
+                each = ", ".join(
+                    f"{code} on {long_date(day)}" for code, day in starts.items()
+                )
+                indexed_on = f"each set to 100 on its own first day here ({each})"
+            st.caption(
+                f"Value against the {base_code}, {indexed_on}. A rising line means "
+                f"the coin gained value, so each line ends at 100 plus its percent "
+                f"change. Blue gained, red lost; the dashed line is the second one. "
+                f"A coin with only days of history draws a short line at the right "
+                f"of the chart, with a marker on every point so it stays visible."
+            )
+
+        for code in crypto_picked:
+            row = crypto_changes[crypto_changes["quote_code"] == code].iloc[0]
+            ending = invest_one(row, amount)
+            began, ended = coin_span[code]
+            st.markdown(
+                esc(
+                    f"**{row['name']} ({code}):** {money(amount)} put in on "
+                    f"{long_date(began)} would be worth {money(ending)} on "
+                    f"{long_date(ended)} "
+                    f"({(ending / amount - 1) * 100:+.2f}%)."
+                )
+            )
+        st.caption(
+            "Past movement, not a forecast, and these are far more volatile than "
+            "the currencies on the other tabs."
+        )
+
+        with st.expander("View as a table"):
+            st.dataframe(
+                crypto_changes.rename(
+                    columns={
+                        "quote_code": "Code",
+                        "name": "Crypto",
+                        "first_rate": f"Rate on {crypto_first}",
+                        "last_rate": f"Rate on {crypto_last}",
+                        "pct_change": "% change",
+                    }
+                ),
+                hide_index=True,
+                use_container_width=True,
             )
 
 

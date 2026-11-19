@@ -2,6 +2,8 @@ import sqlite3
 import json
 import pathlib
 
+from rates_util import asset_type
+
 
 DATA_DIR = pathlib.Path(__file__).resolve().parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -17,10 +19,14 @@ conn.execute("DROP TABLE IF EXISTS exchange_rates")
 conn.execute("""CREATE TABLE currencies (
     currency_code TEXT PRIMARY KEY,
     name TEXT,
-    symbol TEXT
+    symbol TEXT,
+    type TEXT
 )""")
 # one row per currency, this barely changes so it gets its own small table
-# EX: USD, United States Dollar, $
+# EX: USD, United States Dollar, $, currency
+# `type` is what keeps cryptocurrencies out of the currency rankings: it is
+# "currency", "crypto", "metal" or "unit", taken from Frankfurter's own label
+# where the snapshot has one.
 
 conn.execute("""CREATE TABLE exchange_rates (
     date TEXT,
@@ -37,9 +43,15 @@ with open(currency_files[-1]) as f:
     currency_names = json.load(f)
 
 for currency in currency_names:
+    code = currency["iso_code"]
     conn.execute(
-        "INSERT OR REPLACE INTO currencies VALUES (?,?,?)",
-        (currency["iso_code"], currency["name"], currency["symbol"]),
+        "INSERT OR REPLACE INTO currencies VALUES (?,?,?,?)",
+        (
+            code,
+            currency["name"],
+            currency["symbol"],
+            asset_type(code, currency.get("type")),
+        ),
     )
 # loops through every currency and inserts it into the currencies table
 
@@ -55,6 +67,10 @@ for path in sorted(DATA_DIR.glob("rates_*.json")):
 # loops through every rate in every snapshot and inserts it into the exchange_rates table
 
 print("currencies rows:", conn.execute("SELECT COUNT(*) FROM currencies").fetchone()[0])
+for kind, count in conn.execute(
+    "SELECT type, COUNT(*) FROM currencies GROUP BY type ORDER BY type"
+):
+    print(f"  {kind}: {count}")
 print("exchange_rates rows:", conn.execute("SELECT COUNT(*) FROM exchange_rates").fetchone()[0])
 
 conn.commit()
