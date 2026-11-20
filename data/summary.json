@@ -1,9 +1,9 @@
 {
   "base": "USD",
   "start": "2026-10-22",
-  "end": "2026-11-19",
+  "end": "2026-11-20",
   "window_days": 30,
-  "generated": "2026-11-19",
+  "generated": "2026-11-20",
   "top": {
     "code": "SCR",
     "name": "Seychellois Rupee",
