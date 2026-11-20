@@ -7,13 +7,13 @@
   "top": {
     "code": "SCR",
     "name": "Seychellois Rupee",
-    "pct_change": 2.3638,
+    "pct_change": 2.3559,
     "hundred_becomes": 102.36
   },
   "bottom": {
     "code": "BRL",
     "name": "Brazilian Real",
-    "pct_change": -13.7787,
-    "hundred_becomes": 86.22
+    "pct_change": -14.6043,
+    "hundred_becomes": 85.4
   }
 }
