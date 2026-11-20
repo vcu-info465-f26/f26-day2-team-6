@@ -86,12 +86,12 @@ Users may also contact a member of the development team for additional assistanc
 
 This project is developed and maintained by INFO 465 Team 6.
 
-| Team Member | Role |
+Team Member and Role
 
-| Hassan | Reviewer |
-| Alana | Reviewer |
-| Shanika | Project Manager |
-| Amare | Tester |
+| Hassan - Reviewer |
+| Alana - Reviewer |
+| Shanika - Project Manager |
+| Amare - Tester |
 
 ## Data Source
 
