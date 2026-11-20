@@ -6,14 +6,18 @@ on:
   workflow_dispatch:        # lets you run it by hand from the Actions tab
 
 permissions:
-  contents: write        # needed so the job can push the snapshot branch
-  pull-requests: write   # needed so the job can open the snapshot pull request
+  contents: write        # needed so the job can push snapshots to main
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update main before refreshing
+        run: git pull --ff-only origin main
 
       - uses: actions/setup-python@v5
         with:
@@ -33,9 +37,7 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python src/summary.py
 
-      - name: Open snapshot pull request
-        env:
-          GH_TOKEN: ${{ secrets.PR_TOKEN }}
+      - name: Commit snapshot directly to main
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -45,17 +47,5 @@ jobs:
             exit 0
           fi
           DAY="$(date -u +%F)"
-          BRANCH="data/daily-snapshot-$DAY"
-          git checkout -b "$BRANCH"
           git commit -m "Daily snapshot $DAY"
-          git push --force origin "$BRANCH"
-          if [ -z "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
-            gh pr create --base main --head "$BRANCH" \
-              --title "Daily snapshot $DAY" \
-              --body "Automated currency snapshot for $DAY."
-          else
-            echo "PR already open for $BRANCH"
-          fi
-          # Queue the PR so it merges itself once any required checks pass.
-          # Needs "Allow auto-merge" turned on in the repo settings.
-          gh pr merge --auto --squash "$BRANCH"
+          git push origin HEAD:main
