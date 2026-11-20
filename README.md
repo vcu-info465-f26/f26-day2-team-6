@@ -1,41 +1,102 @@
-Currency Conversion Rates Dashboard
-Frankfuter API
 
-Story Goal:
-By November 19, someone using our dashboard will no longer see cryptocurrencies mixed in with traditional currencies. Crypto gets its own tab, where Bitcoin and the others are only compared to each other. Traditional currencies stay in the main charts and rankings, each with a small country flag beside it so a visitor can tell at a glance where that currency comes from.
+**Currency Conversion Rates Dashboard**
+**INFO 465 | Team 6**
 
-Story Line:
-As an international investor, I want a brief inforamative summary of current international exchange rates data and to be able to query data via a chatbot so that I can stay informed about global currency values that interest me.
+**Data Source:** Frankfurter API
 
-Mission Statement:
-The purpose of this project is to collect and organize currency information from two related API endpoints so that users can easily query, review and compare currency data.
+**Live Dashboard:** [Currency Conversion Rates Dashboard](https://team6-currency.streamlit.app/)
 
-Foundation:
-The first endpoint retrieves currency exchange rate information, including the exchange rate and the date associated with that rate. This allows the system to track how currencies are valued and when the rate was recorded.
+## Project Overview
 
-The second endpoint retrieves information about currencies, including the country associated with the currency and its currency symbol. This provides additional context that helps identify and understand each currency.
-
-The data from both endpoints is then brought together in the Build.db database. By combining the exchange rate, date, country, and currency symbol, the database creates a centralized dataset that can be used for comparison, analysis, and review.
-
-Achievement: 
-Our code runs, it pulls real data from two Frankfuter API endpoints, it writes dated snapshots, and loads them into a database. That data is used to generate a factual summery about currency rates. It provides factual information queried from a chatbot. The data is then automatically refreshresed daily to keep up with real time changes. 
-
-The AI summary is built in Summary.py and updates daily with a 30 day window of exchange rate data. Secrets needed: GROQ_API_KEY
-
-Hassan - Tester
-
-Alana - Project Manager
-
-Shanika - Reviewer
-
-Amare - Review
+The Currency Conversion Rates Dashboard is an interactive web application that allows users to review, compare, and analyze international currency exchange rates. The application provides automated daily data updates, AI-generated summaries, interactive visualizations, and a chatbot that allows users to query currency exchange rate information.
 
 
-## Dashboard (Sprint 3)
+## Why This Project Is Useful
 
-Live dashboard: https://team6-currency.streamlit.app/
+The dashboard provides international investors and individuals interested in global currency markets with an accessible platform for monitoring exchange rates and identifying currency trends.
 
-Run locally from the repo root:
+Users can:
 
-    pip install -r requirements.txt
-    python -m streamlit run src/app.py
+- Review international currency exchange rates.
+- Compare currencies and historical exchange rate trends.
+- Access AI-generated summaries of exchange rate data.
+- Ask questions through an interactive chatbot.
+- Monitor daily changes in currency values.
+- Make more informed financial decisions using historical data.
+
+## User Story
+
+As an international investor, I want a brief, informative summary of current international exchange rate data and the ability to query data through a chatbot so that I can stay informed about global currency values that interest me.
+
+## Sprint 4 Story Goal
+
+By November 19, users will no longer see cryptocurrencies mixed with traditional currencies on the dashboard, cryptocurrencies will have a dedicated tab, Bitcoin and other supported cryptocurrencies will be compared separately, traditional currencies will remain in the main charts and rankings and country flags will appear alongside traditional currencies to help users identify their associated countries or regions.
+
+## Project Achievements
+
+The development team has successfully implemented the following functionality:
+
+- Retrieves actual currency data from two Frankfurter API endpoints.
+- Creates and stores dated currency exchange rate snapshots.
+- Loads currency information into a centralized database.
+- Generates factual summaries using collected exchange rate data.
+- Provides data-driven responses through an interactive chatbot.
+- Automatically refreshes exchange rate data daily.
+- Displays currency information through an interactive Streamlit dashboard.
+
+## Getting Started
+
+### Access the Live Dashboard
+
+Users can access the application directly without installing any software:
+
+[Launch the Currency Conversion Rates Dashboard](https://team6-currency.streamlit.app/)
+
+### Run the Application Locally
+
+From the root directory of the repository, install the required dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Launch the Streamlit application:
+
+```bash
+python -m streamlit run src/app.py
+```
+
+## Help and Support
+
+When submitting an issue, please include:
+
+- A description of the issue.
+- Steps to reproduce the issue.
+- Expected and actual results.
+- Screenshots or error messages, if applicable.
+
+Users may also contact a member of the development team for additional assistance
+
+| Amare | Priceas2@vcu.edu |
+| Hassan | Elshowayah@vcu.edu | 
+| Alana | maceachronas@vcu.edu |
+| Shanika | Rhodessc@vcu.edu |
+
+## Maintainers and Contributors
+
+This project is developed and maintained by INFO 465 Team 6.
+
+| Team Member | Role |
+
+| Hassan | Reviewer |
+| Alana | Reviewer |
+| Shanika | Project Manager |
+| Amare | Tester |
+
+## Data Source
+
+Currency exchange rate information is retrieved through the Frankfurter API.
+
+[Frankfurter API Documentation](https://frankfurter.dev/)
+
+Exchange rate data is refreshed daily and should not be interpreted as live, real-time financial market pricing.
