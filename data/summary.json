@@ -1,9 +1,9 @@
 {
   "base": "USD",
   "start": "2026-10-22",
-  "end": "2026-11-20",
+  "end": "2026-11-21",
   "window_days": 30,
-  "generated": "2026-11-20",
+  "generated": "2026-11-21",
   "top": {
     "code": "SCR",
     "name": "Seychellois Rupee",
@@ -13,7 +13,7 @@
   "bottom": {
     "code": "BRL",
     "name": "Brazilian Real",
-    "pct_change": -14.6043,
-    "hundred_becomes": 85.4
+    "pct_change": -14.7142,
+    "hundred_becomes": 85.29
   }
 }
