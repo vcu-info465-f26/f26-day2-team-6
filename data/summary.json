@@ -1,19 +1,19 @@
 {
   "base": "USD",
-  "start": "2026-10-22",
-  "end": "2026-11-21",
+  "start": "2026-10-28",
+  "end": "2026-11-22",
   "window_days": 30,
-  "generated": "2026-11-21",
+  "generated": "2026-11-22",
   "top": {
-    "code": "SCR",
-    "name": "Seychellois Rupee",
-    "pct_change": 2.3559,
-    "hundred_becomes": 102.36
+    "code": "EGP",
+    "name": "Egyptian Pound",
+    "pct_change": 4.111,
+    "hundred_becomes": 104.11
   },
   "bottom": {
     "code": "BRL",
     "name": "Brazilian Real",
-    "pct_change": -14.7142,
-    "hundred_becomes": 85.29
+    "pct_change": -9.577,
+    "hundred_becomes": 90.42
   }
 }
