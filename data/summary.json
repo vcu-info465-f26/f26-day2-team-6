@@ -1,19 +1,19 @@
 {
   "base": "USD",
   "start": "2026-10-28",
-  "end": "2026-11-23",
+  "end": "2026-11-24",
   "window_days": 30,
-  "generated": "2026-11-23",
+  "generated": "2026-11-24",
   "top": {
     "code": "EGP",
     "name": "Egyptian Pound",
-    "pct_change": 3.8353,
-    "hundred_becomes": 103.84
+    "pct_change": 3.517,
+    "hundred_becomes": 103.52
   },
   "bottom": {
-    "code": "BRL",
-    "name": "Brazilian Real",
-    "pct_change": -9.9874,
-    "hundred_becomes": 90.01
+    "code": "COP",
+    "name": "Colombian Peso",
+    "pct_change": -10.0095,
+    "hundred_becomes": 89.99
   }
 }
