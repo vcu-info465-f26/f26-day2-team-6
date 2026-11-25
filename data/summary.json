@@ -1,19 +1,19 @@
 {
   "base": "USD",
   "start": "2026-10-28",
-  "end": "2026-11-24",
+  "end": "2026-11-25",
   "window_days": 30,
-  "generated": "2026-11-24",
+  "generated": "2026-11-25",
   "top": {
-    "code": "EGP",
-    "name": "Egyptian Pound",
-    "pct_change": 3.517,
-    "hundred_becomes": 103.52
+    "code": "LRD",
+    "name": "Liberian Dollar",
+    "pct_change": 3.3305,
+    "hundred_becomes": 103.33
   },
   "bottom": {
     "code": "COP",
     "name": "Colombian Peso",
-    "pct_change": -10.0095,
-    "hundred_becomes": 89.99
+    "pct_change": -12.364,
+    "hundred_becomes": 87.64
   }
 }
