@@ -1,19 +1,19 @@
 {
   "base": "USD",
   "start": "2026-10-28",
-  "end": "2026-11-25",
+  "end": "2026-11-26",
   "window_days": 30,
-  "generated": "2026-11-25",
+  "generated": "2026-11-26",
   "top": {
     "code": "LRD",
     "name": "Liberian Dollar",
-    "pct_change": 3.3305,
-    "hundred_becomes": 103.33
+    "pct_change": 3.5571,
+    "hundred_becomes": 103.56
   },
   "bottom": {
     "code": "COP",
     "name": "Colombian Peso",
-    "pct_change": -12.364,
-    "hundred_becomes": 87.64
+    "pct_change": -11.7513,
+    "hundred_becomes": 88.25
   }
 }
